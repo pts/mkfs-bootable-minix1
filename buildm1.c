@@ -7,7 +7,7 @@
  *      mm:             the memory manager
  *      fs:             the file system
  *      init:           the system initializer
- *      menu:           the file system checker
+ *      menu:           the menu to change the boot parameters
  *
  * The bootblok file goes in sector 0 of the boot diskette.  The operating system
  * begins directly after it.  The kernel, mm, fs, init, and menu are each
@@ -20,14 +20,15 @@
  * After the boot image has been built, build goes back and makes several
  * patches to the image file or diskette:
  *
- *      1. The last 4 words of the boot block are set as follows:
- *	   Word at 504:	Number of sectors to load
- *	   Word at 506:	DS value for running menu
- *	   Word at 508:	PC value for starting menu
- *	   Word at 510:	CS value for running menu
+ *      1. The last few words of the boot block are set as follows:
+ *	   Word at 502:	Number of sectors to load
+ *	   Word at 504:	DS value for running menu
+ *	   Word at 506:	PC value for starting menu
+ *	   Word at 508:	CS value for running menu
+ *	   Word at 510:	magic 0xAA55 number for boot loader
  *
  *	2. Build writes a table into the first 8 words of the kernel's
- *	   data space.  It has 4 entries, the cs and ds values for each
+ *	   data space.  It has 4 entries, the code and data sizes for each
  *	   program.  The kernel needs this information to run mm, fs, and
  *	   init.  Build also writes the kernel's DS value into address 4
  *	   of the kernel's TEXT segment, so the kernel can set itself up.
@@ -36,27 +37,54 @@
  *         of the file system data space. The file system needs this
  *         information, and expects to find it here.
  *
+ * When the "-s" flag is given, the symbol table (if any) of each component
+ * is loaded at the end of the bss.  Patching has further steps:
+ *
+ *	2a. The offset of the symbol table in the data segment (in clicks) is
+ *	    placed in the spare word at location 2 in the code segment.  The
+ *	    sizes array is adjusted so that the symbol table is effectively
+ *	    part of the data segment.
+ *
  * Build is called by:
  *
- *      build bootblok kernel mm fs init menu image
+ *      build [-s] bootblok kernel mm fs init menu db image
  *
  * to get the resulting image onto the file "image".
+ * To compile this program on a unix system, no special flags are needed.
+ * For a DOS system use
+ *	-DMSDOS
+ * In either case, if you wish to use your own custom image build utilities
+ * then use
+ *	-DCUSTOM
+ * You will need to supply
+ *	create_image(char *f);		-- f is the name of the image
+ *	read_block(int blk, char buff[SECTOR_SIZE]);
+ *					-- read a sector of the boot image
+ *	write_block(int blk, char buff[SECTOR_SIZE]);
+ *					-- write a sector of the boot image
+ *	IOinit();			-- Initialize IO
  */
 
 /* Modified by Bruce Evans, 21 Nov 88 to load symbol tables for debugger.
-   For each piece of the kernel, the symbol table is loaded at the end of
-   the bss. A pointer to it is placed in the spare word at location 2 in
-   the code segment. The sizes array is adjusted so that the symbol table
-   is effectively part of the data segment.
-   It would be better for everything to load the exec headers and chain
-   them together.
-
-   BDE 8 Feb 89. CLICK_SIZE 256 instead of 16.
-   BDE 2 Mar 89. CLICK_SIZE and CLICK_SHIFT variables clicksize, click_shift.
+ * BDE 2 Mar 89. CLICK_SIZE and CLICK_SHIFT variables clicksize, click_shift.
+ * BDE 8 Feb 89. CLICK_SIZE 256 instead of 16.
+ * BDE 28 Jul 89. Sym offsets in clicks instead of bytes. Removed bad shorts.
+ * BDE Sep 89. Don't load symbol tables by default.
+ * 
+ * Marty Leisner Aug(?) 89. Magic number for boot loader.
+ *
+ * Andrew Cagney 11 Nov 89. Supported CUSTOM versions. Fixed expression
+ * invoving negated sizeof(). Sizeof may be unsigned. Used fcntl.h.
+ * Eliminated special case for PCIX since Minix printf now does %ld.
+ *
+ * BDE Mar 90. Load debugger.
  */
 
+/* Warning: the sizes != BLOCK_SIZE are extremely inefficient.  There are
+ * scattered magic 512's and the distinction between the physical sector
+ * size and the buffer and i/o sizes is not clear.  A mess.
+ */
 
-#define PROGRAMS 5              /* kernel + mm + fs + init + menu = 5 */
 #define PROG_ORG 1536           /* where does kernel begin in abs mem */
 #define DS_OFFSET 4L            /* position of DS written in kernel text seg */
 #define SYM_OFFSET 2L		/* position of syms writ in kernel text seg */
@@ -69,8 +97,10 @@
 #define KERN 0
 #define MM   1
 #define FS   2
-#define INIT 3
-#define FSCK 4
+#define INIT 3			/* must be the last of the system programs */
+#define MENU 4			/* bootstrap programs follow system programs */
+#define DB   5
+#define PROGRAMS 6              /* kernel + mm + fs + init + menu + db = 6 */
 
 /* Information about the file header. */
 #define HEADER1 32              /* short form header size */
@@ -83,10 +113,14 @@
 #define SYM_POS 5               /* where is sym size in header */
 #define SEP_ID_BIT 0x20         /* bit that tells if file is separate I & D */
 
-#ifdef MSDOS
-# define BREAD 4                /* value 0 means ASCII read */
+#include <sys/types.h>
+#include <fcntl.h>
+#ifdef O_BINARY
+#  define BREAD		(O_RDONLY | O_BINARY)
+#  define BREADWRITE	(O_RDWR | O_BINARY)
 #else
-# define BREAD 0
+#  define BREAD		O_RDONLY
+#  define BREADWRITE	O_RDWR
 #endif
 
 int image;                      /* file descriptor used for output file */
@@ -95,14 +129,18 @@ int buf_bytes;                  /* # bytes in buf at present */
 char buf[SECTOR_SIZE];          /* buffer for output file */
 char zero[SECTOR_SIZE];         /* zeros, for writing bss segment */
 
-long cum_size;                  /* Size of kernel+mm+fs+init */
-long all_size;                  /* Size of all 5 programs */
+int sym_flag;			/* nonzero to load symbol tables */
 
 unsigned click_shift;		/* CLICK_SHIFT used to compile kernel/mm/fs */
 unsigned clicksize;		/* CLICK_SIZE used to compile kernel/mm/fs */
-				/* grrr, click_size would be ambiguous */
+				/* click_size would be ambiguous */
 
 struct sizes {
+  unsigned long base;		/* offset from start of programs */
+  unsigned long end;		/* offset to byte after last in this program */
+  unsigned short ds;		/* data segment after loading */
+  unsigned short ip;		/* instruction pointer after loading */
+  unsigned short cs;		/* code segment after loading */
   unsigned text_size;           /* size in bytes */
   unsigned data_size;           /* size in bytes */
   unsigned bss_size;            /* size in bytes */
@@ -110,33 +148,46 @@ struct sizes {
   int sep_id;                   /* 1 if separate, 0 if not */
 } sizes[PROGRAMS];
 
-char *name[] = {"\nkernel", "mm    ", "fs    ", "init  ", "menu  "};
+char *name[] = {"\nkernel", "mm    ", "fs    ", "init  ", "menu  ", "db    "};
 
 main(argc, argv)
 int argc;
 char *argv[];
 {
-/* Copy the boot block and the 5 programs to the output. */
+/* Copy the boot block and the programs to the output. */
 
   int i;
 
-  if (argc != PROGRAMS+3) pexit("seven file names expected. ", "");
+  /* Take any symbols flag out of args. */
+  for (i = 1; i < argc; ++i) {
+	if (strcmp(argv[i], "-s") == 0) {
+		int j;	
+		for (j = i + 1; j < argc; ++j)
+			argv[j - 1] = argv[j];
+		--argc;
+		sym_flag = 1;
+	}
+  }
+
+  if (argc != PROGRAMS+3) pexit("8 file names expected. ", "");
 
   IOinit();			/* check for DMAoverrun (DOS) */
-  create_image(argv[7]);              /* create the output file */
+  create_image(argv[PROGRAMS+2]);	/* create the output file */
 
   /* Go get the boot block and copy it to the output file or diskette. */
   copy1(argv[1]);
 
-  /* Copy the 5 programs to the output file or diskette. */
+  /* Copy the programs to the output file or diskette. */
   for (i = 0; i < PROGRAMS; i++) copy2(i, argv[i+2]);
   flush();
-  printf("                                               -----      -----\n");
-  printf("Operating system size  %29ld      %5lx\n", cum_size, cum_size);
-  printf("\nTotal size including menu is %ld.\n", all_size);
+  printf("                                                ------      -----\n");
+  printf("Total size             %31lu      %5lx\n", sizes[PROGRAMS - 1].end,
+	 sizes[PROGRAMS - 1].end);
+  printf("Operating system size  %31lu      %5lx\n", sizes[INIT].end,
+	 sizes[INIT].end);
 
   /* Make the three patches to the output file or diskette. */
-  patch1(all_size);
+  patch1();
   patch2();
   patch3();
   exit(0);
@@ -178,10 +229,11 @@ char *file_name;                /* file to open */
  * except for the text size when separate I & D is in use.
  */
 
-  int fd, sepid, bytes_read, count;
-  unsigned text_bytes, data_bytes, bss_bytes, rest, filler;
-  unsigned file_text_bytes, sym_bytes;
-  long tot_bytes;
+  int fd, sepid, bytes_read;
+  unsigned text_bytes, data_bytes, bss_bytes, sym_bytes;
+  unsigned file_text_bytes, file_sym_bytes;
+  unsigned long tot_bytes;
+  unsigned short cs;
   
   if ( (fd = open(file_name, BREAD)) < 0) pexit("can't open ", file_name);
 
@@ -192,13 +244,11 @@ char *file_name;                /* file to open */
   /* If the kernel, determine click_shift and clicksize. */
   if (num == 0) {
 	long lseek();
-	long offset;
 	unsigned char click_buf[4];
 
-	offset = sizeof click_buf;
 	if (read(fd, click_buf, sizeof click_buf) != sizeof click_buf)
 		pexit("can't read click_shift in ", file_name);
-	if (lseek(fd,  -offset, 1) < 0)
+	if (lseek(fd, - (long) sizeof click_buf, 1) < 0)
 		pexit("can't seek before click_shift in ", file_name);
 	click_shift = click_buf[2] + (click_buf[3] << 8);
 	if (click_shift == 0)
@@ -208,58 +258,57 @@ char *file_name;                /* file to open */
 	clicksize = 1 << click_shift;
   }
 
-  /* Pad the total size to a clicksize-byte multiple, if needed. */
+  /* Check separate I&D text has enough padding (no longer crucial). */
   if (sepid && ((text_bytes % DATA_ALIGNMENT) != 0) ) {
         pexit("separate I & D but text size not multiple of 16 bytes.  File: ", 
                                                                 file_name);
   }
+
+  /* Pad text, data+bss and symbols individually to a multiple of clicksize.
+   * Common I&D text is turned into data so does not need (or allow) padding.
+   */
   file_text_bytes = text_bytes;
-  if (sepid)
-	text_bytes = (text_bytes + clicksize - 1) & ~(clicksize - 1);
-  tot_bytes = (long) text_bytes + (data_bytes + bss_bytes) + sym_bytes;
-  rest = tot_bytes % clicksize;
-  filler = (rest > 0 ? clicksize - rest : 0);
-  bss_bytes += filler;
-  tot_bytes += filler;
-  if (num < FSCK) cum_size += tot_bytes;
-  all_size += tot_bytes;
+  if (sepid) {
+	text_bytes += padding(text_bytes);
+	bss_bytes += padding(data_bytes + bss_bytes);
+  } else
+	bss_bytes += padding(text_bytes + data_bytes + bss_bytes);
+  file_sym_bytes = sym_bytes;
+  sym_bytes += padding(sym_bytes);
+
+  /* Accumulate totals. */
+  tot_bytes = (unsigned long) text_bytes + (data_bytes+bss_bytes) + sym_bytes;
 
   /* Record the size information in the table. */
+  if (num > 0)
+	sizes[num].base = sizes[num - 1].end;
+  sizes[num].end = sizes[num].base + tot_bytes;
+  sizes[num].ip = 0;
+  cs = (PROG_ORG + sizes[num].base) >> HCLICK_SHIFT;
+  sizes[num].cs = cs;
+  sizes[num].ds = sepid ? cs + (text_bytes >> HCLICK_SHIFT) : cs;
   sizes[num].text_size = text_bytes;
   sizes[num].data_size = data_bytes;
   sizes[num].bss_size  = bss_bytes;
   sizes[num].sym_size  = sym_bytes;
   sizes[num].sep_id    = sepid;
 
-  /* Print a message giving the program name and size, except for menu. */
-  if (num < FSCK) { 
-        printf("%s  text=%5u  data=%5u  bss=%5u  tot=%5ld  hex=%5lx  %s\n",
-                name[num], text_bytes, data_bytes, bss_bytes, tot_bytes,
-                tot_bytes, (sizes[num].sep_id ? "Separate I & D" : ""));
-  }
-
+  /* Print the name and size of the program. */
+  printf("%s  text=%5u  data=%5u  bss=%6u  tot=%6lu  hex=%5lx  %s\n",
+	 name[num], text_bytes, data_bytes, bss_bytes, tot_bytes,
+	 tot_bytes, (sizes[num].sep_id ? "Sep I&D" : "Com I&D"));
 
   /* Read in the text and data segments, and copy them to output. */
   copy3(fd, file_text_bytes, file_name);
-
-  /* Oops, pad the text segment in the middle of this. */
-  text_bytes -= file_text_bytes;	/* remainder now */
-  while (text_bytes != 0) {
-        count = (text_bytes < SECTOR_SIZE ? text_bytes : SECTOR_SIZE);
-        wr_out(zero, count);
-        text_bytes -= count;
-  }
+  wr_zero(text_bytes - file_text_bytes);
   copy3(fd, data_bytes, file_name);
 
   /* Write the bss to output. */
-  while (bss_bytes > 0) {
-        count = (bss_bytes < SECTOR_SIZE ? bss_bytes : SECTOR_SIZE);
-        wr_out(zero, count);
-        bss_bytes -= count;
-  }
+  wr_zero(bss_bytes);
 
-  /* Copy symbol table to output. */
+  /* Copy symbol table to output and pad it. */
   copy3(fd, sym_bytes, file_name);
+  wr_zero(sym_bytes - file_sym_bytes);
 
   close(fd);
 }
@@ -362,6 +411,9 @@ char *file_name;
   *bss_bytes  = (unsigned) head[BSS_POS];
   *sym_bytes  = (unsigned) head[SYM_POS];
 #endif
+
+  if (!sym_flag)
+	*sym_bytes = 0;		/* pretend there are no symbols */
 }
 
 
@@ -421,37 +473,29 @@ clear_buf()
 }
 
 
-patch1(all_size)
-long all_size;
+patch1()
 {
-/* Put the ip and cs values for menu in the last two words of the boot blk.
- * If menu is sep I&D we must also provide the ds-value (addr. 506).
- * Put in bootblok-offset 504 the number of sectors to load.
- */
+/* Fill in the last few words of the boot block. */
 
-  long menu_org;
-  unsigned short ip, cs, ds, ubuf[SECTOR_SIZE/2], sectrs;
+  unsigned short ubuf[SECTOR_SIZE/2], sectrs;
 
-  if (cum_size % clicksize != 0)
+  if (sizes[INIT].end % clicksize != 0)
 	pexit("MINIX is not multiple of clicksize bytes", "");
-  menu_org = PROG_ORG + cum_size;       /* where does menu begin */
-  ip = 0;
-  cs = menu_org >> HCLICK_SHIFT;
-  if (sizes[FSCK].sep_id)
-     ds = cs + (sizes[FSCK].text_size >> HCLICK_SHIFT);
-  else
-     ds = cs;
 
   /* calc nr of sectors to load (starting at 0) */
-  sectrs = (unsigned) (all_size / 512L);
-  if (all_size % 512 != 0)
+  sectrs = (unsigned) (sizes[PROGRAMS - 1].end / 512L);
+  if (sizes[PROGRAMS - 1].end % 512 != 0)
      ++sectrs;
 
   read_block(0, ubuf);          /* read in boot block */
-  ubuf[(SECTOR_SIZE/2) - 4] = sectrs;
-  ubuf[(SECTOR_SIZE/2) - 3] = ds;
-  ubuf[(SECTOR_SIZE/2) - 2] = ip;
-  ubuf[(SECTOR_SIZE/2) - 1] = cs;
+  ubuf[(SECTOR_SIZE/2) - 8] = sizes[DB].ds;
+  ubuf[(SECTOR_SIZE/2) - 7] = sizes[DB].ip;
+  ubuf[(SECTOR_SIZE/2) - 6] = sizes[DB].cs;
+  ubuf[(SECTOR_SIZE/2) - 5] = sectrs;
+  ubuf[(SECTOR_SIZE/2) - 4] = sizes[MENU].ds;
+  ubuf[(SECTOR_SIZE/2) - 3] = sizes[MENU].ip;
+  ubuf[(SECTOR_SIZE/2) - 2] = sizes[MENU].cs;
+  ubuf[(SECTOR_SIZE/2) - 1] = 0xAA55;
   write_block(0, ubuf);
 }
 
@@ -469,51 +513,47 @@ patch2()
  * at location 4 in the kernel's text space.  It must go in text space because
  * when the kernel starts up, only CS is correct.  It does not know DS, so it
  * can't load DS from data space, but it can load DS from text space.
+ *
  * Write the offset of the symbol table for each progam into location 2 of
  * its code space, for the debugger. No one was expecting this, but is is
  * the only available unused space.
  */
 
-  int i, j;
-  unsigned short t, d, b, s, text_clicks, data_clicks, ds;
-  long text_offset, data_offset;
+  int i;
+  unsigned t, d, b, s;
+  unsigned long text_bytes, data_bytes, sym_offset, ds_offset;
+  unsigned long text_offset, data_offset;
 
   /* See if the magic number is where it should be in the kernel. */
   text_offset = 512L;
-  data_offset = 512L + (long)sizes[KERN].text_size;    /* start of kernel data */
-  i = (get_byte(data_offset+1L) << 8) + get_byte(data_offset);
+  data_offset = 512L + (unsigned long) sizes[KERN].text_size; /*start of data*/
+  i = get_word(data_offset);
   if (i != KERNEL_D_MAGIC)  {
 	pexit("kernel data space: no magic #","");
   }
   
-  for (i = 0; i < PROGRAMS - 1; i++) {
+  for (i = 0; i <= INIT; i++) {
         t = sizes[i].text_size;
         d = sizes[i].data_size;
         b = sizes[i].bss_size;
 	s = sizes[i].sym_size;
         if (sizes[i].sep_id) {
-                text_clicks = t >> click_shift;
-                data_clicks = ((unsigned long) d + b + s) >> click_shift;
-		put_word(text_offset + SYM_OFFSET, d + b);
+		text_bytes = t;
+		data_bytes = (unsigned long) (d + b) + s;
+		sym_offset = d + b;
         } else {
-                text_clicks = 0;
-                data_clicks = ((unsigned long) t + d + b + s) >> click_shift;
-		put_word(text_offset + SYM_OFFSET, t + d + b);
+		text_bytes = 0;
+		data_bytes = (unsigned long) t + (d + b) + s;
+		sym_offset = t + d + b;
         }
-        put_byte(data_offset + 4*i + 0L, (text_clicks>>0) & 0377);
-        put_byte(data_offset + 4*i + 1L, (text_clicks>>8) & 0377);
-        put_byte(data_offset + 4*i + 2L, (data_clicks>>0) & 0377);
-        put_byte(data_offset + 4*i + 3L, (data_clicks>>8) & 0377);
+	put_click(data_offset + 4*i + 0L, text_bytes);
+	put_click(data_offset + 4*i + 2L, data_bytes);
+	put_click(text_offset + SYM_OFFSET, sym_offset);
         text_offset += (unsigned long) t + d + b + s;
   }
 
-  /* Now write the DS value into word 4 of the kernel text space. */
-  if (sizes[KERN].sep_id == 0)
-        ds = PROG_ORG >> HCLICK_SHIFT;	/* combined I & D space */
-  else
-        ds = (PROG_ORG + sizes[KERN].text_size) >> HCLICK_SHIFT; /* separate */
-  put_byte(512L + DS_OFFSET, ds & 0377);
-  put_byte(512L + DS_OFFSET + 1L, (ds>>8) & 0377);
+  /* Now write the DS value into a magic word of the kernel text space. */
+  put_word(512L + DS_OFFSET, sizes[KERN].ds);
 }
 
 
@@ -523,65 +563,37 @@ patch3()
  * space.  The file system expects to find these 3 words there.
  */
 
-  unsigned short init_text_size, init_data_size, init_buf[SECTOR_SIZE/2], i;
-  unsigned short w0, w1, w2;
-  int b0, b1, b2, b3, b4, b5, mag;
-  long init_org, fs_org, fbase, mm_data;
+  unsigned long init_text_size, init_data_size;
+  unsigned mag;
+  unsigned long fs_data, mm_data;	/* offsets to data in file */
 
-  init_org  = PROG_ORG;
-  init_org += (long)sizes[KERN].text_size+sizes[KERN].data_size+sizes[KERN].bss_size + sizes[KERN].sym_size;
-  /* this code was awful and is worse after adding sym_sizes */
-  mm_data = init_org - PROG_ORG +512L;	/* offset of mm in file */
-  mm_data += (long) sizes[MM].text_size;
-  init_org += (long)sizes[MM].text_size + sizes[MM].data_size + sizes[MM].bss_size + sizes[MM].sym_size;
-  fs_org = init_org - PROG_ORG + 512L;	/* offset of fs-text into file */
-  fs_org +=  (long) sizes[FS].text_size;
-  init_org += (long)sizes[FS].text_size + sizes[FS].data_size + sizes[FS].bss_size + sizes[FS].sym_size;
+  mm_data = sizes[MM].base + sizes[MM].text_size + SECTOR_SIZE;
+  fs_data = sizes[FS].base + sizes[FS].text_size + SECTOR_SIZE;
   init_text_size = sizes[INIT].text_size;
   init_data_size = sizes[INIT].data_size + sizes[INIT].bss_size
                  + sizes[INIT].sym_size;
-  init_org  = init_org >> click_shift;	/* convert to clicks */
   if (sizes[INIT].sep_id == 0) {
         init_data_size += init_text_size;
         init_text_size = 0;
   }
-  init_text_size = init_text_size >> click_shift;
-  init_data_size = init_data_size >> click_shift;
-
-  w0 = (unsigned short) init_org;
-  w1 = init_text_size;
-  w2 = init_data_size;
-  b0 =  w0 & 0377;
-  b1 = (w0 >> 8) & 0377;
-  b2 = w1 & 0377;
-  b3 = (w1 >> 8) & 0377;
-  b4 = w2 & 0377;
-  b5 = (w2 >> 8) & 0377;
 
   /* Check for appropriate magic numbers. */
-  fbase = fs_org;
-  mag = (get_byte(mm_data+1L) << 8) + get_byte(mm_data+0L);
-  if (mag != FS_D_MAGIC) pexit("mm data space: no magic #","");
-  mag = (get_byte(mm_data+3L) << 8) + get_byte(mm_data+2L);
+  if (get_word(mm_data) != FS_D_MAGIC) pexit("mm data space: no magic #","");
+  mag = get_word(mm_data + 2);
   if (mag == 0) mag = HCLICK_SHIFT;	/* old mm */
   if (mag != click_shift) pexit("mm click_shift does not match kernel's", "");
-  mag = (get_byte(fbase+1L) << 8) + get_byte(fbase+0L);
-  if (mag != FS_D_MAGIC) pexit("fs data space: no magic #","");
-  mag = (get_byte(fbase+3L) << 8) + get_byte(fbase+2L);
+  if (get_word(fs_data) != FS_D_MAGIC) pexit("fs data space: no magic #","");
+  mag = get_word(fs_data + 2);
   if (mag == 0) mag = HCLICK_SHIFT;	/* old fs */
   if (mag != click_shift) pexit("fs click_shift does not match kernel's", "");
 
-  put_byte(fbase+4L, b0);
-  put_byte(fbase+5L, b1);
-  put_byte(fbase+6L, b2);
-  put_byte(fbase+7L, b3);
-  put_byte(fbase+8L ,b4);
-  put_byte(fbase+9L, b5);
+  put_click(fs_data+4L, PROG_ORG + sizes[INIT].base);
+  put_click(fs_data+6L, init_text_size);
+  put_click(fs_data+8L, init_data_size);
 }
 
-
 int get_byte(offset)
-long offset;
+unsigned long offset;
 {
 /* Fetch one byte from the output file. */
 
@@ -591,8 +603,16 @@ long offset;
   return(buff[(unsigned) (offset % SECTOR_SIZE)] & 0377);
 }
 
+int get_word(offset)
+unsigned long offset;
+{
+/* Fetch one word from the output file. */
+
+  return((get_byte(offset + 1) << 8) | get_byte(offset));
+}
+
 put_byte(offset, byte_value)
-long offset;
+unsigned long offset;
 int byte_value;
 {
 /* Write one byte into the output file. This is not very efficient, but
@@ -615,15 +635,54 @@ char *s1, *s2;
 }
 
 
-/* this should be used instead of paired put_byte()'s */
+int padding(num)
+unsigned num;
+{
+/* Calculate padding to make number a multiple of clicksize. */
+
+  unsigned fragment;
+
+  fragment = num % clicksize;
+  return(fragment == 0 ? 0 : clicksize - fragment);
+}
+
+put_click(offset, value)
+unsigned long offset;
+unsigned long value;
+{
+/* Convert value to clicks and write it into output file. */
+
+  put_word(offset, (unsigned) (value >> click_shift));
+}
+
+
 put_word(offset, word_value)
-long offset;
+unsigned long offset;
 unsigned word_value;
 {
+/* Write one word into the output file. Maybe truncate word_value to 2 bytes.*/
+
   put_byte(offset, word_value % 256);
   put_byte(offset + 1, word_value / 256);
 }
 
+
+wr_zero(remainder)
+unsigned remainder;
+{
+/* Write zeros into the output file. */
+
+  unsigned count;
+
+  while (remainder != 0) {
+	count = (remainder < SECTOR_SIZE ? remainder : SECTOR_SIZE);
+	wr_out(zero, count);
+	remainder -= count;
+  }
+}
+
+
+#ifndef CUSTOM /* the rest of this file is not used in CUSTOM configurations */
 
 /*===========================================================================
  * The following code is only used in the UNIX version of this program.
@@ -635,7 +694,7 @@ char *f;
 /* Create the output file. */
   image = creat(f, 0666);
   close(image);
-  image = open(f, 2);
+  image = open(f, BREADWRITE);
 }
 
 read_block(blk, buff)
@@ -762,3 +821,5 @@ char *derrtab[14] = {
 
 
 #endif /*MSDOS*/
+
+#endif /* CUSTOM */
