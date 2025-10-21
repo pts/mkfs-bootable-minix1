@@ -41,6 +41,17 @@ sub parse_uint($) {
   $v
 }
 
+sub parse_int32($) {
+  my $int32 = $_[0];
+  return -0x7fffffff - 1 if $int32 =~ m@^-(?:0+20000000000|0[xX]0*80000000|2147483648)\Z(?!\n)@;  # Avoid overflows and underflows.
+  my $sign = substr($int32, 0, 1) eq "-" ? -1 : 1;
+  # TODO(pts): Catch more out-of-range errors in 32-bit Perls. Currently it seems to be saturating.
+  my $v = ($int32 =~ m@^-?(0[0-7])*\Z(?!\n)@) ? oct($1) * $sign : ($int32 =~ m@^-?(0[xX][0-9a-fA-F]*)\Z(?!\n)@) ? hex($1) * $sign : ($int32 =~ m@^-?([1-9]\d*)\Z(?!\n)@) ? int($1) * $sign : undef;
+  die("fatal: bad integer: $int32\n") if !defined($v);
+  die("fatal: 32-bit signed integer out of range: $int32\n") if (($v < 0) ? -$v : $v) & ~0x7fffffff;
+  $v
+}
+
 sub get_min_blockc($$) {
   my $inodec = defined($_[0]) ? $_[0] : 1;  # 1 is the minimum number of inodes: unused inode 0 and the root inode.
   my $reservedblockc = ($_[1] + 0x3ff) >> 10;
@@ -73,6 +84,9 @@ sub write_block($$) {
 
 #my $device_fn;  # See above.
 my $size;
+my $uid = 2;  # UID if bin. Same default as in Minix 1.5 pc/disk.13.ex/p/commands/mkfs.c .
+my $gid = 2;  # GID of bin. Same default as in Minix 1.5 pc/disk.13.ex/p/commands/mkfs.c .
+my $mtime = 0xdd;  # Some small, reproducible default. 1970-01-01 00:03:41 GMT.
 my $reserved_size = 0;
 my $do_fix_qemu = 0;
 my $do_force_size = 0;
@@ -88,6 +102,9 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
     elsif ($arg =~ s@^--size=@@) { $size = parse_size($arg) }
     elsif ($arg =~ s@^--reserved=@@) { $reserved_size = parse_size($arg) }
     elsif ($arg =~ s@^--inodes=@@) { $inodec = parse_uint($arg) }
+    elsif ($arg =~ s@^--uid=@@) { $uid = parse_uint($arg) }  # User ID.
+    elsif ($arg =~ s@^--gid=@@) { $gid = parse_uint($arg) }  # Group ID.
+    elsif ($arg =~ s@^--mtime=@@) { $mtime = parse_int32($arg) }  # Group ID.
     elsif ($arg eq    "--fix-qemu") { $do_fix_qemu = 1 }
     elsif ($arg eq "--no-fix-qemu") { $do_fix_qemu = 0 }
     elsif ($arg eq    "--force-size") { $do_force_size = 1 }
@@ -106,6 +123,8 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
 die("fatal: minix1 inode count too small, must be at least 1: $inodec\n") if defined($inodec) and $inodec < 1;  # Minimum is 1: the root inode.
 die("fatal: minix1 inode count too large: $inodec\n") if defined($inodec) and $inodec >= 0xffff;
 die("fatal: minix1 filesystem size too small: $size\n") if defined($size) and ($size >> 10) < get_min_blockc($inodec, $reserved_size);
+die("fatal: minix1 user ID (UID) too large: $uid\n") if $uid > 0xffff;
+die("fatal: minix1 group GID (GID) too large: $gid\n") if $gid > 0xff;
 
 die("fatal: error opening device: $device_fn\n") if !open(F, "+< " . fnopenq($device_fn))
     and !open(F, "> " . fnopenq($device_fn));
@@ -133,10 +152,13 @@ die("fatal: minix1 filesystem size too large: $blockc\n") if $blockc > 0xffff;
 # Now we have the final $blockc and $inodec.
 my $imapblockc = ($inodec + 1 + 0x1fff) >> 13;  # 1..8.
 my $iblockc = ($inodec + 1 + 0x1f) >> 5;
-my $zmapblockc_at_most = ($blockc - (2 + $imapblockc + 1 + $iblockc + $reservedblockc) + 1 + 0x1fff) >> 13;
-my $firstdatablock_at_most = 2 + $imapblockc + $zmapblockc_at_most + $iblockc + $reservedblockc;
-my $zmapblockc = ($blockc - $firstdatablock_at_most + 1 + 0x1fff) >> 13;  # 1..8. !! Make $zmapblock even smaller here. Fixed point?
-my $firstdatablock = 2 + $imapblockc + $zmapblockc + $iblockc + $reservedblockc;
+my $zmapblockc = 1;  # Lower estimate for $zmapblock, because $zmapblock >= 1.
+my $firstdatablock = 2 + $imapblockc + $zmapblockc + $iblockc + $reservedblockc;  # In this lower estimate for $firstdatablock, we use 1 as lower estimate for $zmapblockc.
+my $zmapblockc2;
+while (($zmapblockc2 = ($blockc - $firstdatablock + 1 + 0x1fff) >> 13) > $zmapblockc) {  # Stay in the loop if $zmapblock isn't large enough.
+  $firstdatablock = 2 + $imapblockc + ($zmapblockc = $zmapblockc2) + $iblockc + $reservedblockc;  # Increase both.
+}
+die("fatal: assert: zmapblockc too large: $zmapblockc\n") if $zmapblockc > 8;
 printf(STDERR "info: blockc=0x%x=%u fssize=%s inodec=0x%x=%u firstdatablock=0x%x=%u f=%s\n",
        $blockc, $blockc, format_blockc_size($blockc), $inodec, $inodec, $firstdatablock, $firstdatablock, $device_fn);
 
@@ -164,11 +186,7 @@ write_block(1, pack("v6Vv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstda
   substr($zmap_data, $blockc18 >> 3) = "\xff" x ((($zmapblockc << 13) - $blockc18) >> 3);
   write_block(2 + $imapblockc, $zmap_data);  # TODO(pts): Write fewer NULs to sparse file.
 }
-{ my $rootdir_uid = 2;  # !! Configurable.
-  my $rootdir_gid = 2;  # !! Configurable.
-  my $rootdir_mtime = 0xdd;  # !! Configurable.
-  write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $rootdir_uid, 0x20, 0xdd, $rootdir_gid, 2, $firstdatablock));  # Write rootdir (/) inode.
-}
+write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $uid, 0x20, $mtime, $gid, 2, $firstdatablock));  # Write rootdir (/) inode.
 write_block(2 + $imapblockc + $zmapblockc + $iblockc + $reservedblockc, pack("va14va14", 1, ".", 1, ".."));  # Write rootdir (/) entries: "." and "..".
 # TODO(pts): Add an option to write extra NUL bytes: boot block, end of superbloc, end of rootdir inode block, end of rootdir entries block.
 
