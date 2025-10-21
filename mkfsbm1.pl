@@ -6,7 +6,7 @@ eval 'PERL_BADLANG=x;export PERL_BADLANG;exec perl -x "$0" "$@";exit 1'
 #
 # mkfsbm1: create bootable Minix 1 filesystems
 # by pts@fazekas.hu at Tue Oct 21 16:32:49 CEST 2025
-#
+# 
 
 BEGIN { $ENV{LC_ALL} = "C" }  # For deterministic output. Typically not needed. Is it too late for Perl?
 BEGIN { $ENV{TZ} = "GMT" }  # For deterministic output. Typically not needed. Perl respects it immediately.
@@ -80,6 +80,27 @@ sub write_block($$) {
   }
 }
 
+sub read_file($;$) {
+  my($fn, $max_size) = @_;
+  die("fatal: error opening for reading: $fn: $!\n") if !open(FR, "< " . fnopenq($fn));
+  binmode(FR);
+  my($try_size, $got);
+  my $s = "";
+  while (($try_size = (!defined($max_size) or $max_size >= length($fn) + 0x10000) ? 0x10000 : $max_size - length($fn)) > 0) {
+    die("fatal: error reading file: $fn\n") if !defined($got = sysread(FR, $s, $try_size, length($s)));
+    last if !$got;  # Error on EOF.
+  }
+  $s
+}
+
+sub read_file_limited($$$) {
+  my($fn, $min_size, $max_size) = @_;
+  my $s = read_file($fn, $max_size + 1);
+  die("fatal: input file shorter than $min_size bytes: $fn\n") if length($s) < $min_size;
+  die("fatal: input file longer than $max_size bytes: $fn\n") if length($s) > $max_size;
+  $s
+}
+
 # --- main().
 
 #my $device_fn;  # See above.
@@ -91,6 +112,8 @@ my $reserved_size = 0;
 my $do_fix_qemu = 0;
 my $do_force_size = 0;
 my $do_truncate0 = 0;
+my $boot_fn;
+my $super_fn;
 my $inodec;
 die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--help";
 { my $i;
@@ -105,6 +128,8 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
     elsif ($arg =~ s@^--uid=@@) { $uid = parse_uint($arg) }  # User ID.
     elsif ($arg =~ s@^--gid=@@) { $gid = parse_uint($arg) }  # Group ID.
     elsif ($arg =~ s@^--mtime=@@) { $mtime = parse_int32($arg) }  # Group ID.
+    elsif ($arg =~ s@^--boot=@@) { $boot_fn = $arg }  # Copy the contents of this file to the boot block.
+    elsif ($arg =~ s@^--super=@@) { $super_fn = $arg }  # Copy the contents of this file to the superblock (but replace the first 0x12 bytes with the appropriate haders).
     elsif ($arg eq    "--fix-qemu") { $do_fix_qemu = 1 }
     elsif ($arg eq "--no-fix-qemu") { $do_fix_qemu = 0 }
     elsif ($arg eq    "--force-size") { $do_force_size = 1 }
@@ -131,6 +156,20 @@ die("fatal: error opening device: $device_fn\n") if !open(F, "+< " . fnopenq($de
 binmode(F);
 my $device_size;
 die("fatal: error getting device size: $device_fn\n") if !defined($device_size = sysseek(F, 0, 2));
+
+my $boot_data;
+if (defined($boot_fn)) {
+  $boot_data = read_file_limited($boot_fn, 0, 0x400);
+  $boot_data .= "\0" x (0x400 - length($boot_data));
+}
+my $super_data = "";
+if (defined($super_fn)) {
+  $super_data = read_file_limited($super_fn, 0, 0x400);
+  $super_data .= "\0" x (0x400 - length($super_data));
+}
+
+# --- From this point we change $device_fn in F.
+
 $device_size = $device_size + 0;  # Convert "0 but true" to 0.
 $size = $device_size if !defined($size);  # Round down to block size.
 if ($do_fix_qemu) {
@@ -169,7 +208,9 @@ if ($do_truncate0 and $device_size) {
 if ($device_size < $size or ($do_force_size and $device_size != $size)) {
   die("fatal: error changing device size: $device_fn\n") if !truncate(F, $size);
 }
-write_block(1, pack("v6Vv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstdatablock, 0, 0x10081c00, 0x137f));  # Write superblock.
+write_block(0, $boot_data) if defined($boot_data);  # Write boot block.
+substr($super_data, 0, 0x12) = pack("v6Vv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstdatablock, 0, 0x10081c00, 0x137f);
+write_block(1, $super_data);  # Write superblock.
 { my $inodei = $inodec + 1;
   my $inodec18 = $inodei + (-$inodei & 7);
   my $imap_data = "\0" x ($inodec18 << 3);
