@@ -93,11 +93,11 @@ sub read_file($;$) {
   $s
 }
 
-sub read_file_limited($$$) {
+sub read_file_limited($;$$) {
   my($fn, $min_size, $max_size) = @_;
-  my $s = read_file($fn, $max_size + 1);
-  die("fatal: input file shorter than $min_size bytes: $fn\n") if length($s) < $min_size;
-  die("fatal: input file longer than $max_size bytes: $fn\n") if length($s) > $max_size;
+  my $s = read_file($fn, defined($max_size) ? $max_size + 1 : undef);
+  die("fatal: input file shorter than $min_size bytes: $fn\n") if defined($min_size) and length($s) < $min_size;
+  die("fatal: input file longer than $max_size bytes: $fn\n") if defined($max_size) and length($s) > $max_size;
   $s
 }
 
@@ -114,6 +114,7 @@ my $do_force_size = 0;
 my $do_truncate0 = 0;
 my $boot_fn;
 my $super_fn;
+my $kernel_fn;
 my $inodec;
 die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--help";
 { my $i;
@@ -130,6 +131,7 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
     elsif ($arg =~ s@^--mtime=@@) { $mtime = parse_int32($arg) }  # Group ID.
     elsif ($arg =~ s@^--boot=@@) { $boot_fn = $arg }  # Copy the contents of this file to the boot block.
     elsif ($arg =~ s@^--super=@@) { $super_fn = $arg }  # Copy the contents of this file to the superblock (but replace the first 0x12 bytes with the appropriate haders).
+    elsif ($arg =~ s@^--kernel=@@) { $kernel_fn = $arg }  # Copy the contents of this Minix kernel file to the reserved area.
     elsif ($arg eq    "--fix-qemu") { $do_fix_qemu = 1 }
     elsif ($arg eq "--no-fix-qemu") { $do_fix_qemu = 0 }
     elsif ($arg eq    "--force-size") { $do_force_size = 1 }
@@ -147,7 +149,7 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
 }
 die("fatal: minix1 inode count too small, must be at least 1: $inodec\n") if defined($inodec) and $inodec < 1;  # Minimum is 1: the root inode.
 die("fatal: minix1 inode count too large: $inodec\n") if defined($inodec) and $inodec >= 0xffff;
-die("fatal: minix1 filesystem size too small: $size\n") if defined($size) and ($size >> 10) < get_min_blockc($inodec, $reserved_size);
+die("fatal: minix1 filesystem too small: $size bytes\n") if defined($size) and ($size >> 10) < get_min_blockc($inodec, $reserved_size);
 die("fatal: minix1 user ID (UID) too large: $uid\n") if $uid > 0xffff;
 die("fatal: minix1 group GID (GID) too large: $gid\n") if $gid > 0xff;
 
@@ -167,6 +169,49 @@ if (defined($super_fn)) {
   $super_data = read_file_limited($super_fn, 0, 0x400);
   $super_data .= "\0" x (0x400 - length($super_data));
 }
+my $reserved_data;
+if (defined($kernel_fn)) {
+  $reserved_data = read_file_limited($kernel_fn, 0x400);
+  my $final_cs;
+  if ($reserved_data =~ m@^\xb8\xc0\x07 \x8e\xd8 \x31\xf6 \xb8.. \x8e\xc0  \x31\xff \xb9\x00\x01 \xf2\xa5 \xea@sx) {  # Minix 1.5 8086 kernel image with floppy boot sector. Example files: pc/disk.03,
+    my($final, $menu_ds, $menu_pc, $menu_cs) = unpack("v4", substr($reserved_data, 0x1f8, 8));
+    $final_cs = (($final - 1) << 5) + 0x60;
+    my $menu_fofs = 0x200 + (($menu_cs - 0x60) << 4);
+    printf(STDERR "info: Minix kernel boot final=0x%x final_cs=0x%x menu_ds=0x%x menu_pc=0x%x menu_cs=0x%x menu_fofs=0x%x f=%s\n", $final, $final_cs, $menu_ds, $menu_pc, $menu_cs, $menu_fofs, $kernel_fn);
+    die("fatal: bad final: $kernel_fn\n") if $final < 2;
+    die("fatal: bad menu_pc: $kernel_fn\n") if $menu_pc;
+    die("fatal: inconsistent menu_cs and menu_ds: $kernel_fn\n") if $menu_ds != $menu_cs;
+    die("fatal: menu_cs is larger than kernel_cs: $kernel_fn\n") if $menu_cs > $final_cs;
+    die("fatal: Minix kernel image too short: $kernel_fn\n") if length($reserved_data) < 0x200 + (($final_cs - 0x60) << 4);
+    $reserved_data = substr($reserved_data, 0x200, $menu_fofs - 0x200);
+    goto KERNEL_PART;
+  } else { KERNEL_PART:
+    if ($reserved_data =~ m@^\xeb\x04 .. (..) \xfa \xfc \x2e\x8b\x16\x04\x00 \x8e\xda \x8e\xc2 \x8e\xd2 \xbc@sx) {
+      my $kernel_cs = 0x60; my $kernel_ds = unpack("v", $1);
+      die(sprintf("fatal: bad kernel_ds=0x%x: %s\n", $kernel_ds, $kernel_fn)) if $kernel_ds <= 0x60 or $kernel_ds >= 0x60 + (length($reserved_data) >> 4);
+      my($kernel_code_a256, $s1_a256, $s2_a256, $s3_a256, $s4_a256, $s5_a256, $s6_a256, $s7_a256) = unpack("v8", substr($reserved_data, ($kernel_ds - 0x60) << 4));
+      my $kernel_size_para = length($reserved_data) >> 4;
+      my $kernel_sum_size_para = ($kernel_code_a256 + $s1_a256 + $s2_a256 + $s3_a256 + $s4_a256 + $s5_a256 + $s6_a256 + $s7_a256) << 4;
+      printf(STDERR "info: Minix kernel kernel_cs=0x%x kernel_ds=0x%x size=0x%x0 sum_size=0x%x0 kernel_code_a=0x%x s1_a=0x%x s2_a=0x%x s3_a=0x%x s4_a=0x%x s5_a=0x%x s6_a=0x%x s7_a=0x%x f=%s\n",
+             $kernel_cs, $kernel_ds, $kernel_size_para, $kernel_sum_size_para, $kernel_code_a256, $s1_a256, $s2_a256, $s3_a256, $s4_a256, $s5_a256, $s6_a256, $s7_a256, $kernel_fn);
+      die("fatal: inconsistent Minix kernel_code_a and kernel_ds: $kernel_fn\n") if $kernel_cs + ($kernel_code_a256 << 4) != $kernel_ds;
+      die("fatal: inconsistent Minix kernel size and sum_size: $kernel_fn\n") if $kernel_size_para != $kernel_sum_size_para;
+      substr($reserved_data, $kernel_size_para << 4) = "";
+    } elsif ($reserved_data =~ m@^\x9c \x0e \x50 \x51 \x52 \x53 \x55 \x56 \x57 \x0e \x8c\xc8 \xbf@sx) {  # Compressed kernel.
+      # Just use the entire file as a compressed kernel image.
+    } elsif (defined($final_cs)) {
+      die("fatal: unrecognized Minix kernel image before menu: $kernel_fn\n");
+    } else {
+      die("fatal: unrecognized Minix kernel image: $kernel_fn\n");
+    }
+  }
+  if ($reserved_size) {
+    my $size = length($reserved_data);
+    die("fatal: --reserved=$reserved_size value conflicts with --kernel=$kernel_fn of size $size bytes\n") if $size > $reserved_size;
+  } else {
+    $reserved_size = length($reserved_data);
+  }
+}
 
 # --- From this point we change $device_fn in F.
 
@@ -174,20 +219,19 @@ $device_size = $device_size + 0;  # Convert "0 but true" to 0.
 $size = $device_size if !defined($size);  # Round down to block size.
 if ($do_fix_qemu) {
   $size -= $size % $size_multipliers{h};
-  # This fixes the QEMU 2.11.1 disk image size detection quirk: QEMU hides
-  # the last HDD track (cylinder) from the guest, even excluding this track
-  # from the geometry size it returns.
-  #
-  # This can make size negative.
-  $size -= $size_multipliers{h};
+  # The `$size - $size_multipliers{h}' below fixes the QEMU 2.11.1 disk
+  # image size detection quirk: QEMU hides the last HDD track (cylinder)
+  # from the guest, even excluding this track from the geometry size it
+  # returns.
 }
-my $blockc = $size >> 10;
+my $blockc = ($do_fix_qemu ? $size - $size_multipliers{h} : 0) >> 10;  # This can make $blockc negative if $do_fix_quemu is true.
+die("fatal: minix1 filesystem too small: $blockc blocks\n") if $blockc < get_min_blockc($inodec, $reserved_size);
+die("fatal: minix1 filesystem too large: $blockc blocks\n") if $blockc > 0xffff;
 my $reservedblockc = ($reserved_size + 0x3ff) >> 10;
+die("fatal: assert: reserved data too long\n") if defined($reserved_data) and length($reserved_data) > ($reservedblockc << 10);
 # TODO(pts): Add flag to round up $inodec, like mkfs.minix(1) on Linux does it.
 $inodec = ($blockc < $reservedblockc) ? 0x1f : (($blockc - $reservedblockc) / 3) + 8 if !defined($inodec);  # Minix 1.5 pc/disk.13.ex/p/commands/mkfs.c default is 3 * blocks/file.
 die("fatal: bad minix1 inode count: $inodec\n") if $inodec < 1 or $inodec >= 0xffff;
-die("fatal: minix1 filesystem size too small: $size\n") if $blockc < get_min_blockc($inodec, $reserved_size);
-die("fatal: minix1 filesystem size too large: $blockc\n") if $blockc > 0xffff;
 # Now we have the final $blockc and $inodec.
 my $imapblockc = ($inodec + 1 + 0x1fff) >> 13;  # 1..8.
 my $iblockc = ($inodec + 1 + 0x1f) >> 5;
@@ -198,8 +242,21 @@ while (($zmapblockc2 = ($blockc - $firstdatablock + 1 + 0x1fff) >> 13) > $zmapbl
   $firstdatablock = 2 + $imapblockc + ($zmapblockc = $zmapblockc2) + $iblockc + $reservedblockc;  # Increase both.
 }
 die("fatal: assert: zmapblockc too large: $zmapblockc\n") if $zmapblockc > 8;
-printf(STDERR "info: blockc=0x%x=%u fssize=%s inodec=0x%x=%u firstdatablock=0x%x=%u f=%s\n",
-       $blockc, $blockc, format_blockc_size($blockc), $inodec, $inodec, $firstdatablock, $firstdatablock, $device_fn);
+my $firstreservedblock = 2 + $imapblockc + $zmapblockc + $iblockc;
+printf(STDERR "info: blockc=0x%x=%u fssize=%s inodec=0x%x=%u firstreservedblock=0x%x=%u firstdatablock=0x%x=%u f=%s\n",
+       $blockc, $blockc, format_blockc_size($blockc), $inodec, $inodec, $firstreservedblock, $firstreservedblock, $firstdatablock, $firstdatablock, $device_fn);
+
+# Patch .kernel_start_sector and .kernel_sector_count in the boot sector.
+if (defined($boot_data) and defined($kernel_fn)) {
+  my($kernel_start_sector, $kernel_sector_count, $boot_signature) = unpack("v3", substr($boot_data, 0x1fa, 6));
+  if ($boot_signature == 0xaa55 and $kernel_sector_count == 0xffff and $kernel_start_sector == 0xfffe) {
+    $kernel_start_sector = $firstreservedblock << 1; $kernel_sector_count = (length($reserved_data) + 0x1ff) >> 9;
+    die("fatal: kernel_start_sector too large\n") if $kernel_start_sector > 0xffff;
+    die("fatal: kernel way too long\n") if $kernel_sector_count > 0xffff;
+    die("fatal: kernel too long\n") if $kernel_sector_count > ((0x90000 - 0x600) >> 9);  # Limit the kernel arbitrarily to 574.5 KiB. Most boot sectors can't handle more anyway.
+    substr($boot_data, 0x1fa, 4) = pack("vv", $kernel_start_sector, $kernel_sector_count);
+  }
+}
 
 if ($do_truncate0 and $device_size) {
   die("fatal: error truncating device: $device_fn\n") if !truncate(F, 0);  # This will fail on block devices, but it will work on disk image files.
@@ -228,7 +285,8 @@ write_block(1, $super_data);  # Write superblock.
   write_block(2 + $imapblockc, $zmap_data);  # TODO(pts): Write fewer NULs to sparse file.
 }
 write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $uid, 0x20, $mtime, $gid, 2, $firstdatablock));  # Write rootdir (/) inode.
-write_block(2 + $imapblockc + $zmapblockc + $iblockc + $reservedblockc, pack("va14va14", 1, ".", 1, ".."));  # Write rootdir (/) entries: "." and "..".
+write_block($firstreservedblock, $reserved_data) if defined($reserved_data);  # Write data to the reserved area.
+write_block($firstdatablock, pack("va14va14", 1, ".", 1, ".."));  # Write rootdir (/) entries: "." and "..".
 # TODO(pts): Add an option to write extra NUL bytes: boot block, end of superbloc, end of rootdir inode block, end of rootdir entries block.
 
 __END__
