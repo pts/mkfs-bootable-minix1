@@ -112,6 +112,7 @@ my $reserved_size = 0;
 my $do_fix_qemu = 0;
 my $do_force_size = 0;
 my $do_truncate0 = 0;
+my $do_add_vhd_footer = 0;
 my $boot_fn;
 my $super_fn;
 my $kernel_fn;
@@ -132,6 +133,10 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
     elsif ($arg =~ s@^--boot=@@) { $boot_fn = $arg }  # Copy the contents of this file to the boot block.
     elsif ($arg =~ s@^--super=@@) { $super_fn = $arg }  # Copy the contents of this file to the superblock (but replace the first 0x12 bytes with the appropriate haders).
     elsif ($arg =~ s@^--kernel=@@) { $kernel_fn = $arg }  # Copy the contents of this Minix kernel file to the reserved area.
+    elsif ($arg eq    "--vhd") { $do_add_vhd_footer = 1 }
+    elsif ($arg eq "--no-vhd") { $do_add_vhd_footer = 0 }
+    elsif ($arg eq    "--vpc") { $do_add_vhd_footer = 1 }
+    elsif ($arg eq "--no-vpc") { $do_add_vhd_footer = 0 }
     elsif ($arg eq    "--fix-qemu") { $do_fix_qemu = 1 }
     elsif ($arg eq "--no-fix-qemu") { $do_fix_qemu = 0 }
     elsif ($arg eq    "--force-size") { $do_force_size = 1 }
@@ -288,5 +293,40 @@ write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $uid, 0x20, $
 write_block($firstreservedblock, $reserved_data) if defined($reserved_data);  # Write data to the reserved area.
 write_block($firstdatablock, pack("va14va14", 1, ".", 1, ".."));  # Write rootdir (/) entries: "." and "..".
 # TODO(pts): Add an option to write extra NUL bytes: boot block, end of superbloc, end of rootdir inode block, end of rootdir entries block.
+
+if ($do_add_vhd_footer) {  # Add a Virtual PC .vhd footer to make it easy to use the image file in VirtualBox.
+  # In QEMU, it will keep working as either `-drive file=hd.img,format=bin'
+  # or `-drive file=hd.img,format=vpc'. However, for `-fda hd.img', QEMU
+  # will still emit a wearning, because it doesn't check the last sector for
+  # the VHD footer during autodetection.
+  #
+  # VirtualBox respects the disk geometry in the .vhd file up to the max
+  # of C*H*S == 1024*16*63 =~ 504 MiB; above 1024 cyls it starts doing
+  # transformations.
+  my $vhd_size = $blockc << 10;
+  $vhd_size += $size_multipliers{h} if $do_fix_qemu;
+  $vhd_size += (16 * 63 * 0x200) - 1;
+  $vhd_size -= $vhd_size % (16 * 63 * 0x200);
+  my $heads = 16;
+  my $sectors_per_track = 63;
+  my $cylinders = $vhd_size / (16 * 63 * 0x200);
+  # It's possible to have VHD disk images larger than ~504 MiB, but there
+  # are many compatibility issues, so we don't support creating those here.
+  die("fatal: device has too many cylinders for compatible VHD: $cylinders\n") if $cylinders > 1024;
+  $vhd_size += 0xfffff;
+  $vhd_size &= ~0xfffff;  # Round up to the nearest MiB, as required by Microsoft Azure.
+  die("fatal: error changing device size for VHD: $device_fn\n") if !truncate(F, $vhd_size);
+  # VirtualBox doesn't allow adding a disk with the same UUID, so we try to
+  # make these as different as possible, without breaking determinism. QEMU
+  # doesn't have such a limitation.
+  my $uuid = pack("a8nnN", "Minix1__", $blockc, $inodec, $reserved_size);
+  my $vhd_footer = pack("a8N5a4Na4N4nCCNNa16",
+      "conectix", 2, 0x10000, -1, -1, 0, "vpc ", 0x50003, "Wi2k", 0, $vhd_size, 0, $vhd_size, $cylinders, $heads, $sectors_per_track, 2, 0, $uuid);
+  my $checksum = -1;
+  for (my $i = 0; $i < length($vhd_footer); ++$i) { $checksum -= vec($vhd_footer, $i, 8) }
+  substr($vhd_footer, 0x40, 4) = pack("N", $checksum);
+  $vhd_footer .= "\0" x (0x200 - length($vhd_footer));
+  write_block($vhd_size >> 10, $vhd_footer);
+}
 
 __END__
