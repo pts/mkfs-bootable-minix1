@@ -59,6 +59,7 @@ sudo chmod 755 p/etc/rc
 sudo umount p
 rmdir p f
 
-qemu-system-i386 -M isapc -m 4 -drive file=hd.img,format=raw -net none -boot c -debugcon stdio
+# It also works with `-M isapc', but `-M pc-1.0' seems to be more stable.
+qemu-system-i386 -M pc-1.0 -m 4 -drive file=hd.img,format=raw -net none -boot c -debugcon stdio
 
 : "$0" OK.
