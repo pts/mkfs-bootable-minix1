@@ -1,3 +1,11 @@
+/*
+ * buildm1.c: a port of build.c to modern C (C89)
+ * modernized by pts@fazekas.hu at Thu Oct 23 05:24:14 CEST 2025
+ * Compile with: gcc -m32 -s -O2 -W -Wall -Wno-implicit-int -Wno-implicit-function-declaration buildm1.c -o buildm1
+ *
+ * Please note that it still requires little-endian, and sizeof(long) == 4.
+ */
+
 /* This program takes the previously compiled and linked pieces of the
  * operating system, and puts them together to build a boot diskette.
  * The files are read and put on the boot diskette in this order:
@@ -79,6 +87,13 @@
  *
  * BDE Mar 90. Load debugger.
  */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+typedef char assert_sizeof_long_4[sizeof(long) == 4 ? 1 : -1];
 
 /* Warning: the sizes != BLOCK_SIZE are extremely inefficient.  There are
  * scattered magic 512's and the distinction between the physical sector
@@ -214,6 +229,7 @@ char *file_name;
   } while (bytes_read > 0);
   flush();
   close(fd);
+  return 0;
 }
 
 
@@ -229,7 +245,7 @@ char *file_name;                /* file to open */
  * except for the text size when separate I & D is in use.
  */
 
-  int fd, sepid, bytes_read;
+  int fd, sepid;
   unsigned text_bytes, data_bytes, bss_bytes, sym_bytes;
   unsigned file_text_bytes, file_sym_bytes;
   unsigned long tot_bytes;
@@ -311,6 +327,7 @@ char *file_name;                /* file to open */
   wr_zero(sym_bytes - file_sym_bytes);
 
   close(fd);
+  return 0;
 }
 
 
@@ -333,6 +350,7 @@ char *file_name;
     wr_out(inbuf, bytes_read);
     left_to_read -= count;
   }
+  return 0;
 }
 
 
@@ -414,6 +432,7 @@ char *file_name;
 
   if (!sym_flag)
 	*sym_bytes = 0;		/* pretend there are no symbols */
+  return 0;
 }
 
 
@@ -447,19 +466,21 @@ int bytes;
   }
 
   /* Is there any more data to copy. */
-  if (count1 == bytes) return;
+  if (count1 == bytes) return 0;
   bytes -= count1;
   buf_bytes = bytes;
   p = buf;
   while (bytes--) *p++ = *q++;
+  return 0;
 }
 
 
 flush()
 {
-  if (buf_bytes == 0) return;
+  if (buf_bytes == 0) return 0;
   write_block(cur_sector, buf);
   clear_buf();
+  return 0;
 }
 
 
@@ -470,6 +491,7 @@ clear_buf()
   for (p = buf; p < &buf[SECTOR_SIZE]; p++) *p = 0;
   buf_bytes = 0;
   cur_sector++;
+  return 0;
 }
 
 
@@ -497,6 +519,7 @@ patch1()
   ubuf[(SECTOR_SIZE/2) - 2] = sizes[MENU].cs;
   ubuf[(SECTOR_SIZE/2) - 1] = 0xAA55;
   write_block(0, ubuf);
+  return 0;
 }
 
 patch2()
@@ -521,7 +544,7 @@ patch2()
 
   int i;
   unsigned t, d, b, s;
-  unsigned long text_bytes, data_bytes, sym_offset, ds_offset;
+  unsigned long text_bytes, data_bytes, sym_offset;
   unsigned long text_offset, data_offset;
 
   /* See if the magic number is where it should be in the kernel. */
@@ -554,6 +577,7 @@ patch2()
 
   /* Now write the DS value into a magic word of the kernel text space. */
   put_word(512L + DS_OFFSET, sizes[KERN].ds);
+  return 0;
 }
 
 
@@ -590,6 +614,7 @@ patch3()
   put_click(fs_data+4L, PROG_ORG + sizes[INIT].base);
   put_click(fs_data+6L, init_text_size);
   put_click(fs_data+8L, init_data_size);
+  return 0;
 }
 
 int get_byte(offset)
@@ -624,6 +649,7 @@ int byte_value;
   read_block( (unsigned) (offset/SECTOR_SIZE), buff);
   buff[(unsigned) (offset % SECTOR_SIZE)] = byte_value;
   write_block( (unsigned)(offset/SECTOR_SIZE), buff);
+  return 0;
 }
 
 
@@ -653,6 +679,7 @@ unsigned long value;
 /* Convert value to clicks and write it into output file. */
 
   put_word(offset, (unsigned) (value >> click_shift));
+  return 0;
 }
 
 
@@ -664,6 +691,7 @@ unsigned word_value;
 
   put_byte(offset, word_value % 256);
   put_byte(offset + 1, word_value / 256);
+  return 0;
 }
 
 
@@ -679,6 +707,7 @@ unsigned remainder;
 	wr_out(zero, count);
 	remainder -= count;
   }
+  return 0;
 }
 
 
@@ -695,6 +724,7 @@ char *f;
   image = creat(f, 0666);
   close(image);
   image = open(f, BREADWRITE);
+  return 0;
 }
 
 read_block(blk, buff)
@@ -703,6 +733,7 @@ char buff[SECTOR_SIZE];
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (read(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block read error", "");
+  return 0;
 }
 
 write_block(blk, buff)
@@ -711,9 +742,10 @@ char buff[SECTOR_SIZE];
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (write(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block write error", "");
+  return 0;
 }
 
-IOinit() {}	/* dummy */
+IOinit() { return 0; }	/* dummy */
 
 #else /*MSDOS*/
 /*===========================================================================
@@ -813,7 +845,7 @@ char *derrtab[14] = {
         "seek error",
         "unknown media type",
         "sector not found",
-        "printer out of paper (??)",
+        "printer out of paper (??" ")",
         "write fault",
         "read error",
         "general error"
