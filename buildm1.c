@@ -1,8 +1,9 @@
 /*
- * buildm1.c: a port of build.c to modern C (C89)
+ * buildm1.c: a port of build.c to modern C (C89, ANSI C) and C++ (C++98)
  * modernized by pts@fazekas.hu at Thu Oct 23 05:24:14 CEST 2025
  *
  * Compile with: gcc -m32 -s -O2 -ansi -pedantic -W -Wall -Wextra -Wstrict-prototypes buildm1.c -o buildm1
+ * Compile with: g++ -m32 -s -O2 -ansi -pedantic -W -Wall -Wextra buildm1.c -o buildm1
  *
  * Please note that it still requires little-endian, and sizeof(long) == 4.
  */
@@ -90,15 +91,40 @@
  * BDE Mar 90. Load debugger.
  */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <unistd.h>
 
-#ifdef __STDC__
-#  define PROTO(args) args
+#ifndef CONST  /* Use -DCONST= if your C compiler doesn't support const. */
+#  define CONST const
+#endif
+
+/* Macros to generate C89 or C++ (both have __STDC__) and K&R style function
+ * declarations and definitions.
+ */
+#ifdef __STDC__  /* Also true for C++. */
+#  define PROTO(args) args  /* For function declaration. */
+#  define ARGS0() (void)
+#  define ARGS1(names, d1) (d1)
+#  define ARGS2(names, d1, d2) (d1, d2)
+#  define ARGS3(names, d1, d2, d3) (d1, d2, d3)
+#  define ARGS4(names, d1, d2, d3, d4) (d1, d2, d3, d4)
+#  define ARGS5(names, d1, d2, d3, d4, d5) (d1, d2, d3, d4, d5)
+#  define ARGS6(names, d1, d2, d3, d4, d5, d6) (d1, d2, d3, d4, d5, d6)
+#  define ARGS7(names, d1, d2, d3, d4, d5, d6, d7) (d1, d2, d3, d4, d5, d6, d7)
 #else
-#  define PROTO(args) ()
+#  define PROTO(args) ()  /* For function declaration. */
+#  define ARGS0() ()
+#  define ARGS1(names, d1) names d1;
+#  define ARGS2(names, d1, d2) names d1; d2;
+#  define ARGS3(names, d1, d2, d3) names d1; d2; d3;
+#  define ARGS4(names, d1, d2, d3, d4) names d1; d2; d3; d4;
+#  define ARGS5(names, d1, d2, d3, d4, d5) names d1; d2; d3; d4; d5;
+#  define ARGS6(names, d1, d2, d3, d4, d5, d6) names d1; d2; d3; d4; d5; d6;
+#  define ARGS7(names, d1, d2, d3, d4, d5, d6, d7) names d1; d2; d3; d4; d5; d6; d7;
 #endif
 
 typedef char assert_sizeof_long_4[sizeof(long) == 4 ? 1 : -1];
@@ -136,8 +162,6 @@ typedef char assert_sizeof_long_4[sizeof(long) == 4 ? 1 : -1];
 #define SYM_POS 5               /* where is sym size in header */
 #define SEP_ID_BIT 0x20         /* bit that tells if file is separate I & D */
 
-#include <sys/types.h>
-#include <fcntl.h>
 #ifdef O_BINARY
 #  define BREAD		(O_RDONLY | O_BINARY)
 #  define BREADWRITE	(O_RDWR | O_BINARY)
@@ -172,20 +196,20 @@ struct sizes {
   int sep_id;                   /* 1 if separate, 0 if not */
 } sizes[PROGRAMS];
 
-char *name[] = {"\nkernel", "mm    ", "fs    ", "init  ", "menu  ", "db    "};
+CONST char *name[] = {"\nkernel", "mm    ", "fs    ", "init  ", "menu  ", "db    "};
 
 int main PROTO((int argc, char *argv[]));
-void copy1 PROTO((char *filename));
-void copy2 PROTO((int num, char *file_name));
-void copy3 PROTO((int fd, unsigned left_to_read, char *file_name));
-void read_header PROTO((int fd, int *sepid, unsigned long *text_bytes, unsigned long *data_bytes, unsigned long *bss_bytes, unsigned long *sym_bytes, char *file_name));
+void copy1 PROTO((CONST char *file_name));
+void copy2 PROTO((int num, CONST char *file_name));
+void copy3 PROTO((int fd, unsigned left_to_read, CONST char *file_name));
+void read_header PROTO((int fd, int *sepid, unsigned long *text_bytes, unsigned long *data_bytes, unsigned long *bss_bytes, unsigned long *sym_bytes, CONST char *file_name));
 void wr_out PROTO((char buffer[READ_UNIT], int bytes));
 void flush PROTO((void));
 void clear_buf PROTO((void));
 void patch1 PROTO((void));
 void patch2 PROTO((void));
 void patch3 PROTO((void));
-void pexit PROTO((char *s1, char *s2));
+void pexit PROTO((CONST char *s1, CONST char *s2));
 void put_byte PROTO((unsigned long offset, int byte_value));
 void put_click PROTO((unsigned long offset, unsigned long value));
 void put_word PROTO((unsigned long offset, unsigned word_value));
@@ -198,12 +222,10 @@ void IOinit PROTO((void));
 void read_block PROTO((int blk, char buff[SECTOR_SIZE]));
 void write_block PROTO((int blk, char buff[SECTOR_SIZE]));
 #ifdef MSDOS
-void dexit PROTO((char *s, int drive, int sectnum, int err));
+void dexit PROTO((CONST char *s, int drive, int sectnum, int err));
 #endif
 
-int main(argc, argv)
-int argc;
-char *argv[];
+int main ARGS2((argc, argv), int argc, char *argv[])
 {
 /* Copy the boot block and the programs to the output. */
 
@@ -253,8 +275,7 @@ char *argv[];
   exit(0);
 }
 
-void copy1(file_name)
-char *file_name;
+void copy1 ARGS1((file_name), CONST char *file_name)
 {
 /* Copy the specified file to the output.  The file has no header.  All the
  * bytes are copied, until end-of-file is hit.
@@ -274,9 +295,11 @@ char *file_name;
   close(fd);
 }
 
-void copy2(num, file_name)
+void copy2 ARGS2((num, file_name), int num, CONST char *file_name)
+#if 0
 int num;                        /* which program is this (0 - 4) */
 char *file_name;                /* file to open */
+#endif
 {
 /* Open and read a file, copying it to output.  First read the header,
  * to get the text, data, bss and symbol sizes.  Also see if it is separate
@@ -379,10 +402,7 @@ char *file_name;                /* file to open */
 }
 
 
-void copy3(fd, left_to_read, file_name)
-int fd;
-unsigned left_to_read;
-char *file_name;
+void copy3 ARGS3((fd, left_to_read, file_name), int fd, unsigned left_to_read, CONST char *file_name)
 {
   int bytes_read;
   int count;
@@ -405,10 +425,7 @@ char *file_name;
 # include </usr/include/sys/a.out.h>
 #endif
 
-void read_header(fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes, file_name)
-int fd, *sepid;
-unsigned long *text_bytes, *data_bytes, *bss_bytes, *sym_bytes;
-char *file_name;
+void read_header ARGS7((fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes, file_name), int fd, int *sepid, unsigned long *text_bytes, unsigned long *data_bytes, unsigned long *bss_bytes, unsigned long *sym_bytes, CONST char *file_name)
 {
 /* Read the header and check the magic number.  The standard Monix header 
  * consists of 8 longs, as follows:
@@ -484,9 +501,7 @@ char *file_name;
 }
 
 
-void wr_out(buffer, bytes)
-char buffer[READ_UNIT];
-int bytes;
+void wr_out ARGS2((buffer, bytes), char buffer[READ_UNIT], int bytes)
 {
 /* Write some bytes to the output file.  This procedure must avoid writes
  * that are not entire 512-byte blocks, because when this program runs on
@@ -522,7 +537,7 @@ int bytes;
 }
 
 
-void flush()
+void flush ARGS0()
 {
   if (buf_bytes == 0) return;
   write_block(cur_sector, buf);
@@ -530,7 +545,7 @@ void flush()
 }
 
 
-void clear_buf()
+void clear_buf ARGS0()
 {
   register char *p;
 
@@ -540,7 +555,7 @@ void clear_buf()
 }
 
 
-void patch1()
+void patch1 ARGS0()
 {
 /* Fill in the last few words of the boot block. */
 
@@ -566,7 +581,7 @@ void patch1()
   write_block(0, (char*)ubuf);
 }
 
-void patch2()
+void patch2 ARGS0()
 {
 /* This program now has information about the sizes of the kernel, mm, fs, and
  * init.  This information is patched into the kernel as follows. The first 8
@@ -624,7 +639,7 @@ void patch2()
 }
 
 
-void patch3()
+void patch3 ARGS0()
 {
 /* Write the origin and text and data sizes of the init program in FS's data
  * space.  The file system expects to find these 3 words there.
@@ -659,8 +674,7 @@ void patch3()
   put_click(fs_data+8L, init_data_size);
 }
 
-int get_byte(offset)
-unsigned long offset;
+int get_byte ARGS1((offset), unsigned long offset)
 {
 /* Fetch one byte from the output file. */
 
@@ -670,17 +684,14 @@ unsigned long offset;
   return(buff[(unsigned) (offset % SECTOR_SIZE)] & 0377);
 }
 
-int get_word(offset)
-unsigned long offset;
+int get_word ARGS1((offset), unsigned long offset)
 {
 /* Fetch one word from the output file. */
 
   return((get_byte(offset + 1) << 8) | get_byte(offset));
 }
 
-void put_byte(offset, byte_value)
-unsigned long offset;
-int byte_value;
+void put_byte ARGS2((offset, byte_value), unsigned long offset, int byte_value)
 {
 /* Write one byte into the output file. This is not very efficient, but
  * since it is only called to write a few words it is just simpler.
@@ -694,16 +705,14 @@ int byte_value;
 }
 
 
-void pexit(s1, s2)
-char *s1, *s2;
+void pexit ARGS2((s1, s2), CONST char *s1, CONST char *s2)
 {
   printf("Build: %s%s\n", s1, s2);
   exit(1);
 }
 
 
-int padding(num)
-unsigned num;
+int padding ARGS1((num), unsigned num)
 {
 /* Calculate padding to make number a multiple of clicksize. */
 
@@ -713,9 +722,7 @@ unsigned num;
   return(fragment == 0 ? 0 : clicksize - fragment);
 }
 
-void put_click(offset, value)
-unsigned long offset;
-unsigned long value;
+void put_click ARGS2((offset, value), unsigned long offset, unsigned long value)
 {
 /* Convert value to clicks and write it into output file. */
 
@@ -723,9 +730,7 @@ unsigned long value;
 }
 
 
-void put_word(offset, word_value)
-unsigned long offset;
-unsigned word_value;
+void put_word ARGS2((offset, word_value), unsigned long offset, unsigned word_value)
 {
 /* Write one word into the output file. Maybe truncate word_value to 2 bytes.*/
 
@@ -734,8 +739,7 @@ unsigned word_value;
 }
 
 
-void wr_zero(remainder)
-unsigned remainder;
+void wr_zero ARGS1((remainder), unsigned remainder)
 {
 /* Write zeros into the output file. */
 
@@ -755,8 +759,7 @@ unsigned remainder;
  * The following code is only used in the UNIX version of this program.
  *===========================================================================*/
 #ifndef MSDOS
-void create_image(f)
-char *f;
+void create_image ARGS1((f), char *f)
 {
 /* Create the output file. */
   image = creat(f, 0666);
@@ -764,23 +767,22 @@ char *f;
   image = open(f, BREADWRITE);
 }
 
-void read_block(blk, buff)
-int blk;
-char buff[SECTOR_SIZE];
+void read_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (read(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block read error", "");
 }
 
-void write_block(blk, buff)
-int blk;
-char buff[SECTOR_SIZE];
+void write_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (write(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block write error", "");
 }
 
-void IOinit() {}	/* dummy */
+void IOinit ARGS0()
+{
+	/* dummy */
+}
 
 #else /*MSDOS*/
 /*===========================================================================
@@ -789,23 +791,21 @@ void IOinit() {}	/* dummy */
 
 #define MAX_RETRIES     5
 
-char *buff;
+char *buff12;
 char buff1[SECTOR_SIZE];
 char buff2[SECTOR_SIZE];
 int drive;
 
-void IOinit()			/* check if no DMAoverrun & assign the buffer */
+void IOinit ARGS0()
 {
-  if (DMAoverrun(buff1))
-     buff = buff2;
+  if (DMAoverrun(buff1))  /* check if no DMAoverrun & assign the buffer */
+     buff12 = buff2;
   else
-     buff = buff1;
+     buff12 = buff1;
 }
 
 
-void read_block (blocknr,user)
-int blocknr;
-char user[SECTOR_SIZE];
+void read_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   /* read the requested MINIX-block in core */
   int retries,err,i;
@@ -813,44 +813,39 @@ char user[SECTOR_SIZE];
 
   retries = MAX_RETRIES;
   do
-      err = absread (drive, blocknr, buff);
+      err = absread (drive, blk, buff12);
   while (err && --retries);
 
   if (!retries)
-    dexit ("reading",drive,blocknr,err);
+    dexit ("reading",drive,blk,err);
 
-  p=buff; i=SECTOR_SIZE;
-  while (i--) *(user++) = *(p++);
+  p=buff12; i=SECTOR_SIZE;
+  while (i--) *(buff++) = *(p++);
 }
 
 
-
-void write_block (blocknr,user)
-int blocknr;
-char user[SECTOR_SIZE];
+void write_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   /* write the requested MINIX-block to disk */
   int retries,err,i;
   char *p;
 
-  p=buff; i=SECTOR_SIZE;
-  while (i--) *(p++) = *(user++);
+  p=buff12; i=SECTOR_SIZE;
+  while (i--) *(p++) = *(buff++);
 
   retries = MAX_RETRIES;
   do
-      err = abswrite (drive, blocknr, buff);
+      err = abswrite (drive, blk, buff12);
   while (err && --retries);
 
   if (!retries)
-    dexit ("writing",drive,blocknr,err);
+    dexit ("writing",drive,blk,err);
 }
 
 
 extern char *derrtab[];
 
-void dexit (s,drive,sectnum,err)
-int sectnum, err,drive;
-char *s;
+void dexit ARGS4((s, drive, sectnum, err), CONST char *s, int drive, int sectnum, int err);
 {
   printf ("Error %s drive %c, sector: %d, code: %d, %s\n",
            s, drive+'A',sectnum, err, derrtab[err] );
