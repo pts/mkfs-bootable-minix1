@@ -57,7 +57,7 @@
  *
  * Build is called by:
  *
- *      buildm1 [-s] [-b] <bootblok> <kernel> <mm> <fs> <init> <menu> <db> <image>
+ *      buildm1 [-s] [-b] <bootblok> <kernel> <mm> <fs> <init> <menu> [<db>] <image>
  *
  * to get the resulting image onto the file "image".
  * To compile this program on a unix system, no special flags are needed.
@@ -175,6 +175,8 @@ char *argv[];
 /* Copy the boot block and the programs to the output. */
 
   int i;
+  long programs = DB;  /* DB (db) is not specified. */
+  if (*(char*)&programs != 5) pexit("little-endian machine required", "");  /* This fails on big endian and PDP-11 endian systems. */
 
   /* Take any symbols flag out of args. */
   for (i = 1; i < argc; ++i) {
@@ -188,16 +190,22 @@ char *argv[];
 	}
   }
 
-  if (argc != PROGRAMS+3) pexit("8 file names expected. ", "");
+  if (argc == DB + 2 + 1) {
+  } else if (argc == DB + 2 + 2) {
+    ++programs;  /* DB (db) is specified. */
+  } else {
+    pexit("Usage: buildm1 [-s] [-b] <bootblok> <kernel> <mm> <fs> <init> <menu> [<db>] <image>", "");
+  }
 
   IOinit();			/* check for DMAoverrun (DOS) */
-  create_image(argv[PROGRAMS+2]);	/* create the output file */
+  create_image(argv[(int)programs+2]);	/* create the output file */
 
   /* Go get the boot block and copy it to the output file or diskette. */
   copy1(argv[1]);
 
   /* Copy the programs to the output file or diskette. */
-  for (i = 0; i < PROGRAMS; i++) copy2(i, argv[i+2]);
+  for (i = 0; i < DB; i++) copy2(i, argv[i + 2]);
+  copy2(DB, ((int)programs > DB) ? argv[DB + 2] : NULL);
   flush();
   printf("                                                ------      -----\n");
   printf("Total size             %31lu      %5lx\n", sizes[PROGRAMS - 1].end,
@@ -254,12 +262,18 @@ char *file_name;                /* file to open */
   unsigned long file_text_bytes, file_sym_bytes;
   unsigned long tot_bytes;
   unsigned short cs;
-  
-  if ( (fd = open(file_name, BREAD)) < 0) pexit("can't open ", file_name);
 
-  /* Read the header to see how big the segments are. */
-  read_header(fd, &sepid, &text_bytes, &data_bytes, &bss_bytes, &sym_bytes,
-              file_name);
+  if (0) fprintf(stderr, "num=%d file_name=%s\n", num, file_name);
+  if (file_name) {
+    if ( (fd = open(file_name, BREAD)) < 0) pexit("can't open ", file_name);
+
+    /* Read the header to see how big the segments are. */
+    read_header(fd, &sepid, &text_bytes, &data_bytes, &bss_bytes, &sym_bytes,
+                file_name);
+  } else {  /* Simulate empty file. Typically used for DB (db). */
+    file_name = "(none)"; fd = -1; sepid = 0;
+    text_bytes = data_bytes = bss_bytes = sym_bytes = 0;
+  }
 
   /* If the kernel, determine click_shift and clicksize. */
   if (num == 0) {
@@ -319,19 +333,21 @@ char *file_name;                /* file to open */
 	 name[num], text_bytes, data_bytes, bss_bytes, tot_bytes,
 	 tot_bytes, (sizes[num].sep_id ? "Sep I&D" : "Com I&D"));
 
-  /* Read in the text and data segments, and copy them to output. */
-  copy3(fd, file_text_bytes, file_name);
-  wr_zero(text_bytes - file_text_bytes);
-  copy3(fd, data_bytes, file_name);
+  if (fd >= 0) {
+    /* Read in the text and data segments, and copy them to output. */
+    copy3(fd, file_text_bytes, file_name);
+    wr_zero(text_bytes - file_text_bytes);
+    copy3(fd, data_bytes, file_name);
 
-  /* Write the bss to output. */
-  wr_zero(bss_bytes);
+    /* Write the bss to output. */
+    wr_zero(bss_bytes);
 
-  /* Copy symbol table to output and pad it. */
-  copy3(fd, sym_bytes, file_name);
-  wr_zero(sym_bytes - file_sym_bytes);
+    /* Copy symbol table to output and pad it. */
+    copy3(fd, sym_bytes, file_name);
+    wr_zero(sym_bytes - file_sym_bytes);
 
-  close(fd);
+    close(fd);
+  }
   return 0;
 }
 
