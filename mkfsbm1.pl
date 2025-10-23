@@ -178,14 +178,15 @@ my $reserved_data;
 if (defined($kernel_fn)) {
   $reserved_data = read_file_limited($kernel_fn, 0x400);
   my $final_cs;
-  if ($reserved_data =~ m@^\xb8\xc0\x07 \x8e\xd8 \x31\xf6 \xb8.. \x8e\xc0  \x31\xff \xb9\x00\x01 \xf2\xa5 \xea@sx) {  # Minix 1.5 8086 kernel image with floppy boot sector. Example files: pc/disk.03,
-    my($final, $menu_ds, $menu_pc, $menu_cs) = unpack("v4", substr($reserved_data, 0x1f8, 8));
+  if ($reserved_data =~ m@^\xb8\xc0\x07 \x8e\xd8 \x31\xf6 \xb8.. \x8e\xc0  \x31\xff \xb9\x00\x01 [\xf2\xf3]\xa5 \xea@sx) {  # Minix 1.5 8086 kernel image with floppy boot sector. Example files: pc/disk.03, demo_dsk.ibm .
+    my($final, $menu_ds, $menu_pc, $menu_cs) = unpack("v4", substr($reserved_data, ((substr($reserved_data, 0x1fe, 2) eq "\x55\xaa") ? 0x1f6 : 0x1f8), 8));
     $final_cs = (($final - 1) << 5) + 0x60;
     my $menu_fofs = 0x200 + (($menu_cs - 0x60) << 4);
     printf(STDERR "info: Minix kernel boot final=0x%x final_cs=0x%x menu_ds=0x%x menu_pc=0x%x menu_cs=0x%x menu_fofs=0x%x f=%s\n", $final, $final_cs, $menu_ds, $menu_pc, $menu_cs, $menu_fofs, $kernel_fn);
     die("fatal: bad final: $kernel_fn\n") if $final < 2;
     die("fatal: bad menu_pc: $kernel_fn\n") if $menu_pc;
-    die("fatal: inconsistent menu_cs and menu_ds: $kernel_fn\n") if $menu_ds != $menu_cs;
+    die("fatal: bad menu_cs: $kernel_fn\n") if $menu_cs < 0x80;  # This is way too low.
+    die("fatal: inconsistent menu_cs and menu_ds: $kernel_fn\n") if $menu_ds < $menu_cs;  # Minix 1.5 8086 has these equal, but in Minix 1.5 i386, $menu_ds is 0x100 larger.
     die("fatal: menu_cs is larger than kernel_cs: $kernel_fn\n") if $menu_cs > $final_cs;
     die("fatal: Minix kernel image too short: $kernel_fn\n") if length($reserved_data) < 0x200 + (($final_cs - 0x60) << 4);
     $reserved_data = substr($reserved_data, 0x200, $menu_fofs - 0x200);
