@@ -28,8 +28,12 @@ else
   exit 1
 fi
 
+kernel="${1:-disk.03}"  # Let the user specify a different kernel image filename in $1.
+
 for f in disk.03 disk.04 disk.05; do
-  if test -f "$f"; then
+  if test "$f" = disk.03 && "$kernel" != "$f"; then
+    :  # Don't download the kernel file if not needed.
+  elif test -f "$f"; then
     :
   elif wget -nv -O "$f".tmp http://download.minix3.org/previous-versions/Intel-1.5/pc/"$f"; then
     mv "$f".tmp "$f"
@@ -40,7 +44,7 @@ done
 
 "$nasm" -O0 -w+orphan-labels -o minix_1.5_8086_hdd_boot.bin minix_1.5_8086_hdd_boot.nasm
 rm -f hd.img
-"$perl" -x mkfsbm1.pl --size="$(perl -e "print 61*63*16*512")" --fix-qemu --boot=minix_1.5_8086_hdd_boot.bin --kernel=disk.03 hd.img
+"$perl" -x mkfsbm1.pl --size="$(perl -e "print 61*63*16*512")" --fix-qemu --boot=minix_1.5_8086_hdd_boot.bin --kernel="$kernel" hd.img
 
 sudo umount p ||:
 sudo umount f ||:

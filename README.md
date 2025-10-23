@@ -66,3 +66,11 @@ To make it easier to use the disk image with VirtualBox, run *mkfsbm1.pl
 after the Minix filesystem. QEMU doesn't care, it accepts the default
 raw disk images. Having the Virtual PC .vhd footer doesn't break QEMU or the
 Linux kernel mounting the filesystem.
+
+If you want to run Minix 1.5 8086 in 16-bit protected mode instead, using
+more than 640 KiB of memory, then download the kernel using
+[download_minix_1.5_8086_qemu_pm.bin.sh](download_minix_1.5_8086_qemu_pm.bin.sh)
+(command: `./minix_1.5_8086_qemu_pm.bin.sh --rm`), and run the demo script
+as `./demo_minix_1.5_8086_qemu.sh minix_1.5_8086_qemu_pm.bin` instead. This
+kernel was modified and compiled by freebird or gohigh on 2003-01-04 (see
+[oldlinux.org](https://oldlinux.org/)).
