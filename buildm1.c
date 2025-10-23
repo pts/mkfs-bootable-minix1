@@ -2,7 +2,7 @@
  * buildm1.c: a port of build.c to modern C (C89)
  * modernized by pts@fazekas.hu at Thu Oct 23 05:24:14 CEST 2025
  *
- * Compile with: gcc -m32 -s -O2 -W -Wall -Wno-implicit-int -Wno-implicit-function-declaration buildm1.c -o buildm1
+ * Compile with: gcc -m32 -s -O2 -ansi -pedantic -W -Wall -Wextra -Wstrict-prototypes buildm1.c -o buildm1
  *
  * Please note that it still requires little-endian, and sizeof(long) == 4.
  */
@@ -95,6 +95,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef __STDC__
+#  define PROTO(args) args
+#else
+#  define PROTO(args) ()
+#endif
+
 typedef char assert_sizeof_long_4[sizeof(long) == 4 ? 1 : -1];
 
 /* Warning: the sizes != BLOCK_SIZE are extremely inefficient.  There are
@@ -168,7 +174,34 @@ struct sizes {
 
 char *name[] = {"\nkernel", "mm    ", "fs    ", "init  ", "menu  ", "db    "};
 
-main(argc, argv)
+int main PROTO((int argc, char *argv[]));
+void copy1 PROTO((char *filename));
+void copy2 PROTO((int num, char *file_name));
+void copy3 PROTO((int fd, unsigned left_to_read, char *file_name));
+void read_header PROTO((int fd, int *sepid, unsigned long *text_bytes, unsigned long *data_bytes, unsigned long *bss_bytes, unsigned long *sym_bytes, char *file_name));
+void wr_out PROTO((char buffer[READ_UNIT], int bytes));
+void flush PROTO((void));
+void clear_buf PROTO((void));
+void patch1 PROTO((void));
+void patch2 PROTO((void));
+void patch3 PROTO((void));
+void pexit PROTO((char *s1, char *s2));
+void put_byte PROTO((unsigned long offset, int byte_value));
+void put_click PROTO((unsigned long offset, unsigned long value));
+void put_word PROTO((unsigned long offset, unsigned word_value));
+int get_byte PROTO((unsigned long offset));
+int get_word PROTO((unsigned long offset));
+void wr_zero PROTO((unsigned remainder));
+int padding PROTO((unsigned num));
+void create_image PROTO((char *f));
+void IOinit PROTO((void));
+void read_block PROTO((int blk, char buff[SECTOR_SIZE]));
+void write_block PROTO((int blk, char buff[SECTOR_SIZE]));
+#ifdef MSDOS
+void dexit PROTO((char *s, int drive, int sectnum, int err));
+#endif
+
+int main(argc, argv)
 int argc;
 char *argv[];
 {
@@ -220,9 +253,7 @@ char *argv[];
   exit(0);
 }
 
-
-
-copy1(file_name)
+void copy1(file_name)
 char *file_name;
 {
 /* Copy the specified file to the output.  The file has no header.  All the
@@ -241,11 +272,9 @@ char *file_name;
   } while (bytes_read > 0);
   flush();
   close(fd);
-  return 0;
 }
 
-
-copy2(num, file_name)
+void copy2(num, file_name)
 int num;                        /* which program is this (0 - 4) */
 char *file_name;                /* file to open */
 {
@@ -277,7 +306,6 @@ char *file_name;                /* file to open */
 
   /* If the kernel, determine click_shift and clicksize. */
   if (num == 0) {
-	long lseek();
 	unsigned char click_buf[4];
 
 	if (read(fd, click_buf, sizeof click_buf) != sizeof click_buf)
@@ -348,11 +376,10 @@ char *file_name;                /* file to open */
 
     close(fd);
   }
-  return 0;
 }
 
 
-copy3(fd, left_to_read, file_name)
+void copy3(fd, left_to_read, file_name)
 int fd;
 unsigned left_to_read;
 char *file_name;
@@ -371,7 +398,6 @@ char *file_name;
     wr_out(inbuf, bytes_read);
     left_to_read -= count;
   }
-  return 0;
 }
 
 
@@ -379,7 +405,7 @@ char *file_name;
 # include </usr/include/sys/a.out.h>
 #endif
 
-read_header(fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes,file_name)
+void read_header(fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes, file_name)
 int fd, *sepid;
 unsigned long *text_bytes, *data_bytes, *bss_bytes, *sym_bytes;
 char *file_name;
@@ -455,11 +481,10 @@ char *file_name;
 
   if (!sym_flag)
 	*sym_bytes = 0;		/* pretend there are no symbols */
-  return 0;
 }
 
 
-wr_out(buffer, bytes)
+void wr_out(buffer, bytes)
 char buffer[READ_UNIT];
 int bytes;
 {
@@ -489,36 +514,33 @@ int bytes;
   }
 
   /* Is there any more data to copy. */
-  if (count1 == bytes) return 0;
+  if (count1 == bytes) return;
   bytes -= count1;
   buf_bytes = bytes;
   p = buf;
   while (bytes--) *p++ = *q++;
-  return 0;
 }
 
 
-flush()
+void flush()
 {
-  if (buf_bytes == 0) return 0;
+  if (buf_bytes == 0) return;
   write_block(cur_sector, buf);
   clear_buf();
-  return 0;
 }
 
 
-clear_buf()
+void clear_buf()
 {
   register char *p;
 
   for (p = buf; p < &buf[SECTOR_SIZE]; p++) *p = 0;
   buf_bytes = 0;
   cur_sector++;
-  return 0;
 }
 
 
-patch1()
+void patch1()
 {
 /* Fill in the last few words of the boot block. */
 
@@ -532,7 +554,7 @@ patch1()
   if (sizes[PROGRAMS - 1].end % 512 != 0)
      ++sectrs;
 
-  read_block(0, ubuf);          /* read in boot block */
+  read_block(0, (char*)ubuf);          /* read in boot block */
   ubuf[(SECTOR_SIZE/2) - 8] = sizes[DB].ds;
   ubuf[(SECTOR_SIZE/2) - 7] = sizes[DB].ip;
   ubuf[(SECTOR_SIZE/2) - 6] = sizes[DB].cs;
@@ -541,11 +563,10 @@ patch1()
   ubuf[(SECTOR_SIZE/2) - 3] = sizes[MENU].ip;
   ubuf[(SECTOR_SIZE/2) - 2] = sizes[MENU].cs;
   ubuf[(SECTOR_SIZE/2) - 1] = 0xAA55;
-  write_block(0, ubuf);
-  return 0;
+  write_block(0, (char*)ubuf);
 }
 
-patch2()
+void patch2()
 {
 /* This program now has information about the sizes of the kernel, mm, fs, and
  * init.  This information is patched into the kernel as follows. The first 8
@@ -600,11 +621,10 @@ patch2()
 
   /* Now write the DS value into a magic word of the kernel text space. */
   put_word(512L + DS_OFFSET, sizes[KERN].ds);
-  return 0;
 }
 
 
-patch3()
+void patch3()
 {
 /* Write the origin and text and data sizes of the init program in FS's data
  * space.  The file system expects to find these 3 words there.
@@ -637,7 +657,6 @@ patch3()
   put_click(fs_data+4L, PROG_ORG + sizes[INIT].base);
   put_click(fs_data+6L, init_text_size);
   put_click(fs_data+8L, init_data_size);
-  return 0;
 }
 
 int get_byte(offset)
@@ -659,7 +678,7 @@ unsigned long offset;
   return((get_byte(offset + 1) << 8) | get_byte(offset));
 }
 
-put_byte(offset, byte_value)
+void put_byte(offset, byte_value)
 unsigned long offset;
 int byte_value;
 {
@@ -672,11 +691,10 @@ int byte_value;
   read_block( (unsigned) (offset/SECTOR_SIZE), buff);
   buff[(unsigned) (offset % SECTOR_SIZE)] = byte_value;
   write_block( (unsigned)(offset/SECTOR_SIZE), buff);
-  return 0;
 }
 
 
-pexit(s1, s2)
+void pexit(s1, s2)
 char *s1, *s2;
 {
   printf("Build: %s%s\n", s1, s2);
@@ -695,18 +713,17 @@ unsigned num;
   return(fragment == 0 ? 0 : clicksize - fragment);
 }
 
-put_click(offset, value)
+void put_click(offset, value)
 unsigned long offset;
 unsigned long value;
 {
 /* Convert value to clicks and write it into output file. */
 
   put_word(offset, (unsigned) (value >> click_shift));
-  return 0;
 }
 
 
-put_word(offset, word_value)
+void put_word(offset, word_value)
 unsigned long offset;
 unsigned word_value;
 {
@@ -714,11 +731,10 @@ unsigned word_value;
 
   put_byte(offset, word_value % 256);
   put_byte(offset + 1, word_value / 256);
-  return 0;
 }
 
 
-wr_zero(remainder)
+void wr_zero(remainder)
 unsigned remainder;
 {
 /* Write zeros into the output file. */
@@ -730,7 +746,6 @@ unsigned remainder;
 	wr_out(zero, count);
 	remainder -= count;
   }
-  return 0;
 }
 
 
@@ -740,35 +755,32 @@ unsigned remainder;
  * The following code is only used in the UNIX version of this program.
  *===========================================================================*/
 #ifndef MSDOS
-create_image(f)
+void create_image(f)
 char *f;
 {
 /* Create the output file. */
   image = creat(f, 0666);
   close(image);
   image = open(f, BREADWRITE);
-  return 0;
 }
 
-read_block(blk, buff)
+void read_block(blk, buff)
 int blk;
 char buff[SECTOR_SIZE];
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (read(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block read error", "");
-  return 0;
 }
 
-write_block(blk, buff)
+void write_block(blk, buff)
 int blk;
 char buff[SECTOR_SIZE];
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (write(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block write error", "");
-  return 0;
 }
 
-IOinit() { return 0; }	/* dummy */
+void IOinit() {}	/* dummy */
 
 #else /*MSDOS*/
 /*===========================================================================
@@ -782,7 +794,7 @@ char buff1[SECTOR_SIZE];
 char buff2[SECTOR_SIZE];
 int drive;
 
-IOinit()			/* check if no DMAoverrun & assign the buffer */
+void IOinit()			/* check if no DMAoverrun & assign the buffer */
 {
   if (DMAoverrun(buff1))
      buff = buff2;
@@ -791,7 +803,7 @@ IOinit()			/* check if no DMAoverrun & assign the buffer */
 }
 
 
-read_block (blocknr,user)
+void read_block (blocknr,user)
 int blocknr;
 char user[SECTOR_SIZE];
 {
@@ -813,7 +825,7 @@ char user[SECTOR_SIZE];
 
 
 
-write_block (blocknr,user)
+void write_block (blocknr,user)
 int blocknr;
 char user[SECTOR_SIZE];
 {
@@ -834,18 +846,19 @@ char user[SECTOR_SIZE];
 }
 
 
+extern char *derrtab[];
 
-dexit (s,drive,sectnum,err)
+void dexit (s,drive,sectnum,err)
 int sectnum, err,drive;
 char *s;
-{ extern char *derrtab[];
+{
   printf ("Error %s drive %c, sector: %d, code: %d, %s\n",
            s, drive+'A',sectnum, err, derrtab[err] );
   exit (2);
 }
 
 
-create_image (s)
+void create_image (s)
 char *s;
 {
   char kbstr[10];
