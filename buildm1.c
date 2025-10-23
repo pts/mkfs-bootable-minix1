@@ -5,7 +5,9 @@
  * Compile with: gcc -m32 -s -O2 -ansi -pedantic -W -Wall -Wextra -Wstrict-prototypes buildm1.c -o buildm1
  * Compile with: g++ -m32 -s -O2 -ansi -pedantic -W -Wall -Wextra buildm1.c -o buildm1
  *
- * Please note that it still requires little-endian, and sizeof(long) == 4.
+ * This program is endianness-independent, i.e. it works identically no
+ * matter what the endianness of the CPU it is. It assumes that integers in
+ * files are stored little-endian (i.e. LSB-first, x86 bytes order).
  */
 
 /* This program takes the previously compiled and linked pieces of the
@@ -69,9 +71,9 @@
  *	-DCUSTOM
  * You will need to supply
  *	create_image(char *f);		-- f is the name of the image
- *	read_block(int blk, char buff[SECTOR_SIZE]);
+ *	read_sector(int blk, char buff[SECTOR_SIZE]);
  *					-- read a sector of the boot image
- *	write_block(int blk, char buff[SECTOR_SIZE]);
+ *	write_sector(int blk, char buff[SECTOR_SIZE]);
  *					-- write a sector of the boot image
  *	IOinit();			-- Initialize IO
  */
@@ -126,8 +128,6 @@
 #  define ARGS6(names, d1, d2, d3, d4, d5, d6) names d1; d2; d3; d4; d5; d6;
 #  define ARGS7(names, d1, d2, d3, d4, d5, d6, d7) names d1; d2; d3; d4; d5; d6; d7;
 #endif
-
-typedef char assert_sizeof_long_4[sizeof(long) == 4 ? 1 : -1];
 
 /* Warning: the sizes != BLOCK_SIZE are extremely inefficient.  There are
  * scattered magic 512's and the distinction between the physical sector
@@ -199,6 +199,12 @@ struct sizes {
 CONST char *name[] = {"\nkernel", "mm    ", "fs    ", "init  ", "menu  ", "db    "};
 
 int main PROTO((int argc, char *argv[]));
+unsigned get_le16 PROTO((CONST unsigned char *p));
+unsigned long get_le32 PROTO((CONST unsigned char *p));
+void set_le16 PROTO((unsigned char *p, unsigned value));
+#if 0
+void set_le32 PROTO((unsigned char *p, unsigned long value));
+#endif
 void copy1 PROTO((CONST char *file_name));
 void copy2 PROTO((int num, CONST char *file_name));
 void copy3 PROTO((int fd, unsigned left_to_read, CONST char *file_name));
@@ -219,8 +225,8 @@ void wr_zero PROTO((unsigned remainder));
 int padding PROTO((unsigned num));
 void create_image PROTO((char *f));
 void IOinit PROTO((void));
-void read_block PROTO((int blk, char buff[SECTOR_SIZE]));
-void write_block PROTO((int blk, char buff[SECTOR_SIZE]));
+void read_sector PROTO((int blk, char buff[SECTOR_SIZE]));
+void write_sector PROTO((int blk, char buff[SECTOR_SIZE]));
 #ifdef MSDOS
 void dexit PROTO((CONST char *s, int drive, int sectnum, int err));
 #endif
@@ -342,7 +348,7 @@ char *file_name;                /* file to open */
 		pexit("kernel click_shift must be >= 4", "");
 	clicksize = 1 << click_shift;
   }
-  if (0) fprintf(stderr, "!! click_shift=%u clicksize=%u\n", click_shift, clicksize);
+  if (0) fprintf(stderr, "info: click_shift=%u clicksize=%u\n", click_shift, clicksize);
 
   /* Check separate I&D text has enough padding (no longer crucial). */
   if (sepid && ((text_bytes % DATA_ALIGNMENT) != 0) ) {
@@ -420,9 +426,30 @@ void copy3 ARGS3((fd, left_to_read, file_name), int fd, unsigned left_to_read, C
   }
 }
 
+unsigned get_le16 ARGS1((p), CONST unsigned char *p)
+{
+  return p[0] | p[1] << 8;
+}
 
-#ifdef XENIX_HEADER
-# include </usr/include/sys/a.out.h>
+void set_le16 ARGS2((p, value), unsigned char *p, unsigned value)
+{
+  *p++ = value;
+  *p = value >> 8;
+}
+
+unsigned long get_le32 ARGS1((p), CONST unsigned char *p)
+{
+  return p[0] | p[1] << 8 | (unsigned long)p[2] << 16 | (unsigned long)p[3] << 24;
+}
+
+#if 0
+void set_le32 ARGS2((p, value), unsigned char *p, unsigned long value)
+{
+  *p++ = value;
+  *p++ = value >> 8;
+  *p++ = value >> 16;
+  *p = value >> 24;
+}
 #endif
 
 void read_header ARGS7((fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes, file_name), int fd, int *sepid, unsigned long *text_bytes, unsigned long *data_bytes, unsigned long *bss_bytes, unsigned long *sym_bytes, CONST char *file_name)
@@ -443,58 +470,28 @@ void read_header ARGS7((fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes,
  * are given in the header.
  */
 
-#ifdef XENIX_HEADER
-  struct  aexec a_header;
-#else
-  long head[12];
-  unsigned short hd[4];
-#endif
+  unsigned char header[0x20];
   int n, header_len;
 
-#ifdef XENIX_HEADER
-  /*
-    Do it right, read header *structure* to get header length.
-    Fortunately header has no longs so we don't have to worry about
-    swapped words, not to mention swapped bytes.
-  */
-  if ((n = read(fd, &a_header, sizeof a_header)) != sizeof a_header)
-  {
-    printf("expected %d, got %d\n", sizeof a_header, n);
-    pexit("file header too short: ", file_name);
-  }
-  if (a_header.xa_magic == FMAGIC)
-    *sepid = 0;
-  else if (a_header.xa_magic == IMAGIC)
-    *sepid = 1;
-  else
-    pexit("not Xenix a.out FMAGIC or IMAGIC. FIle: ", file_name);
-  if (a_header.xa_entry != 0)
-    pexit("nonzero entry point. FIle: ", file_name);
-  *text_bytes = a_header.xa_text;
-  *data_bytes = a_header.xa_data;
-  *bss_bytes  = a_header.xa_bss;
-  *sym_bytes  = a_header.xa_syms;
-#else
   /* Read first 8 bytes of header to get header length. */
-  if ((n = read(fd, hd, 8)) != 8) pexit("file header too short: ", file_name);
-  header_len = hd[HDR_LEN];
+  if ((n = read(fd, header, sizeof(header))) != (int)sizeof(header)) pexit("file header too short: ", file_name);
+  header_len = get_le16(header + (HDR_LEN << 1));
   if (header_len != HEADER1 && header_len != HEADER2) 
         pexit("bad header length. File: ", file_name);
 
   /* Extract separate I & D bit. */
-  *sepid = hd[SEP_POS] & SEP_ID_BIT;
+  *sepid = get_le16(header + (SEP_POS << 1)) & SEP_ID_BIT;
 
   /* Read the rest of the header and extract the sizes. */
-  if ((n = read(fd, head, header_len - 8)) != header_len - 8)
-        pexit("header too short: ", file_name);
+  if (header_len != 0x20)
+        pexit("bad header_len: ", file_name);
 
-  *text_bytes = head[TEXT_POS];
-  *data_bytes = head[DATA_POS];
-  *bss_bytes  = head[BSS_POS];
-  if (bss16_flag) *bss_bytes &= 0xffffU;
-  *sym_bytes  = head[SYM_POS];
-  if (0) fprintf(stderr, "!! READHEAD a_text=0x%lx=%lu a_data=0x%lx=%lu a_bss=0x%lx=%lu\n", *text_bytes, *text_bytes, *data_bytes, *data_bytes, *bss_bytes, *bss_bytes);
-#endif
+  *text_bytes = get_le32(header + 8 + (TEXT_POS << 2));
+  *data_bytes = get_le32(header + 8 + (DATA_POS << 2));
+  *bss_bytes  = get_le32(header + 8 + (BSS_POS << 2));
+  if (bss16_flag) *bss_bytes &= (unsigned)0xffff;
+  *sym_bytes  = get_le32(header + 8 + (SYM_POS << 2));
+  if (0) fprintf(stderr, "info: READHEAD a_text=0x%lx=%lu a_data=0x%lx=%lu a_bss=0x%lx=%lu\n", *text_bytes, *text_bytes, *data_bytes, *data_bytes, *bss_bytes, *bss_bytes);
 
   if (!sym_flag)
 	*sym_bytes = 0;		/* pretend there are no symbols */
@@ -524,7 +521,7 @@ void wr_out ARGS2((buffer, bytes), char buffer[READ_UNIT], int bytes)
   buf_bytes += count1;
   if (buf_bytes == SECTOR_SIZE) {
         /* Write the whole block to the disk. */
-        write_block(cur_sector, buf);
+        write_sector(cur_sector, buf);
         clear_buf();
   }
 
@@ -540,7 +537,7 @@ void wr_out ARGS2((buffer, bytes), char buffer[READ_UNIT], int bytes)
 void flush ARGS0()
 {
   if (buf_bytes == 0) return;
-  write_block(cur_sector, buf);
+  write_sector(cur_sector, buf);
   clear_buf();
 }
 
@@ -554,12 +551,13 @@ void clear_buf ARGS0()
   cur_sector++;
 }
 
+unsigned char ubuf1[SECTOR_SIZE];
 
 void patch1 ARGS0()
 {
 /* Fill in the last few words of the boot block. */
 
-  unsigned short ubuf[SECTOR_SIZE/2], sectrs;
+  unsigned short sectrs;
 
   if (sizes[INIT].end % clicksize != 0)
 	pexit("MINIX is not multiple of clicksize bytes", "");
@@ -569,16 +567,16 @@ void patch1 ARGS0()
   if (sizes[PROGRAMS - 1].end % 512 != 0)
      ++sectrs;
 
-  read_block(0, (char*)ubuf);          /* read in boot block */
-  ubuf[(SECTOR_SIZE/2) - 8] = sizes[DB].ds;
-  ubuf[(SECTOR_SIZE/2) - 7] = sizes[DB].ip;
-  ubuf[(SECTOR_SIZE/2) - 6] = sizes[DB].cs;
-  ubuf[(SECTOR_SIZE/2) - 5] = sectrs;
-  ubuf[(SECTOR_SIZE/2) - 4] = sizes[MENU].ds;
-  ubuf[(SECTOR_SIZE/2) - 3] = sizes[MENU].ip;
-  ubuf[(SECTOR_SIZE/2) - 2] = sizes[MENU].cs;
-  ubuf[(SECTOR_SIZE/2) - 1] = 0xAA55;
-  write_block(0, (char*)ubuf);
+  read_sector(0, (char*)ubuf1);          /* read in boot block */
+  set_le16(ubuf1 + SECTOR_SIZE - (8 << 1), sizes[DB].ds);
+  set_le16(ubuf1 + SECTOR_SIZE - (7 << 1), sizes[DB].ip);
+  set_le16(ubuf1 + SECTOR_SIZE - (6 << 1), sizes[DB].cs);
+  set_le16(ubuf1 + SECTOR_SIZE - (5 << 1), sectrs);
+  set_le16(ubuf1 + SECTOR_SIZE - (4 << 1), sizes[MENU].ds);
+  set_le16(ubuf1 + SECTOR_SIZE - (3 << 1), sizes[MENU].ip);
+  set_le16(ubuf1 + SECTOR_SIZE - (2 << 1), sizes[MENU].cs);
+  set_le16(ubuf1 + SECTOR_SIZE - (1 << 1), 0xAA55);
+  write_sector(0, (char*)ubuf1);
 }
 
 void patch2 ARGS0()
@@ -680,7 +678,7 @@ int get_byte ARGS1((offset), unsigned long offset)
 
   char buff[SECTOR_SIZE];
 
-  read_block( (unsigned) (offset / SECTOR_SIZE), buff);
+  read_sector( (unsigned) (offset / SECTOR_SIZE), buff);
   return(buff[(unsigned) (offset % SECTOR_SIZE)] & 0377);
 }
 
@@ -699,9 +697,9 @@ void put_byte ARGS2((offset, byte_value), unsigned long offset, int byte_value)
 
   char buff[SECTOR_SIZE];
 
-  read_block( (unsigned) (offset/SECTOR_SIZE), buff);
+  read_sector( (unsigned) (offset/SECTOR_SIZE), buff);
   buff[(unsigned) (offset % SECTOR_SIZE)] = byte_value;
-  write_block( (unsigned)(offset/SECTOR_SIZE), buff);
+  write_sector( (unsigned)(offset/SECTOR_SIZE), buff);
 }
 
 
@@ -767,13 +765,13 @@ void create_image ARGS1((f), char *f)
   image = open(f, BREADWRITE);
 }
 
-void read_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
+void read_sector ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (read(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block read error", "");
 }
 
-void write_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
+void write_sector ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   lseek(image, (long)SECTOR_SIZE * (long) blk, 0);
   if (write(image, buff, SECTOR_SIZE) != SECTOR_SIZE) pexit("block write error", "");
@@ -805,7 +803,7 @@ void IOinit ARGS0()
 }
 
 
-void read_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
+void read_sector ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   /* read the requested MINIX-block in core */
   int retries,err,i;
@@ -824,7 +822,7 @@ void read_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 }
 
 
-void write_block ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
+void write_sector ARGS2((blk, buff), int blk, char buff[SECTOR_SIZE])
 {
   /* write the requested MINIX-block to disk */
   int retries,err,i;
