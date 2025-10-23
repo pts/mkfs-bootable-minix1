@@ -1,6 +1,7 @@
 /*
  * buildm1.c: a port of build.c to modern C (C89)
  * modernized by pts@fazekas.hu at Thu Oct 23 05:24:14 CEST 2025
+ *
  * Compile with: gcc -m32 -s -O2 -W -Wall -Wno-implicit-int -Wno-implicit-function-declaration buildm1.c -o buildm1
  *
  * Please note that it still requires little-endian, and sizeof(long) == 4.
@@ -16,6 +17,7 @@
  *      fs:             the file system
  *      init:           the system initializer
  *      menu:           the menu to change the boot parameters
+ *      db:             the debugger
  *
  * The bootblok file goes in sector 0 of the boot diskette.  The operating system
  * begins directly after it.  The kernel, mm, fs, init, and menu are each
@@ -55,7 +57,7 @@
  *
  * Build is called by:
  *
- *      build [-s] bootblok kernel mm fs init menu db image
+ *      buildm1 [-s] [-b] <bootblok> <kernel> <mm> <fs> <init> <menu> <db> <image>
  *
  * to get the resulting image onto the file "image".
  * To compile this program on a unix system, no special flags are needed.
@@ -144,7 +146,8 @@ int buf_bytes;                  /* # bytes in buf at present */
 char buf[SECTOR_SIZE];          /* buffer for output file */
 char zero[SECTOR_SIZE];         /* zeros, for writing bss segment */
 
-int sym_flag;			/* nonzero to load symbol tables */
+char sym_flag;			/* nonzero to load symbol tables */
+char bss16_flag;		/* nonzero to mask a_bss to 16 bits */
 
 unsigned click_shift;		/* CLICK_SHIFT used to compile kernel/mm/fs */
 unsigned clicksize;		/* CLICK_SIZE used to compile kernel/mm/fs */
@@ -175,12 +178,13 @@ char *argv[];
 
   /* Take any symbols flag out of args. */
   for (i = 1; i < argc; ++i) {
-	if (strcmp(argv[i], "-s") == 0) {
-		int j;	
+	if (argv[i][0] == '-' && (argv[i][1] != 's' || argv[i][1] == 'b') && argv[i][2] == '\0') {
+		int j;
+		char *flagp = (argv[i][1] == 's') ? &sym_flag : &bss16_flag;
 		for (j = i + 1; j < argc; ++j)
-			argv[j - 1] = argv[j];
+		argv[j - 1] = argv[j];
 		--argc;
-		sym_flag = 1;
+		*flagp |= 1;
 	}
   }
 
@@ -246,8 +250,8 @@ char *file_name;                /* file to open */
  */
 
   int fd, sepid;
-  unsigned text_bytes, data_bytes, bss_bytes, sym_bytes;
-  unsigned file_text_bytes, file_sym_bytes;
+  unsigned long text_bytes, data_bytes, bss_bytes, sym_bytes;
+  unsigned long file_text_bytes, file_sym_bytes;
   unsigned long tot_bytes;
   unsigned short cs;
   
@@ -273,6 +277,7 @@ char *file_name;                /* file to open */
 		pexit("kernel click_shift must be >= 4", "");
 	clicksize = 1 << click_shift;
   }
+  if (0) fprintf(stderr, "!! click_shift=%u clicksize=%u\n", click_shift, clicksize);
 
   /* Check separate I&D text has enough padding (no longer crucial). */
   if (sepid && ((text_bytes % DATA_ALIGNMENT) != 0) ) {
@@ -310,7 +315,7 @@ char *file_name;                /* file to open */
   sizes[num].sep_id    = sepid;
 
   /* Print the name and size of the program. */
-  printf("%s  text=%5u  data=%5u  bss=%6u  tot=%6lu  hex=%5lx  %s\n",
+  printf("%s  text=%5lu  data=%5lu  bss=%6lu  tot=%6lu  hex=%5lx  %s\n",
 	 name[num], text_bytes, data_bytes, bss_bytes, tot_bytes,
 	 tot_bytes, (sizes[num].sep_id ? "Sep I&D" : "Com I&D"));
 
@@ -360,7 +365,7 @@ char *file_name;
 
 read_header(fd, sepid, text_bytes, data_bytes, bss_bytes, sym_bytes,file_name)
 int fd, *sepid;
-unsigned *text_bytes, *data_bytes, *bss_bytes, *sym_bytes;
+unsigned long *text_bytes, *data_bytes, *bss_bytes, *sym_bytes;
 char *file_name;
 {
 /* Read the header and check the magic number.  The standard Monix header 
@@ -424,10 +429,12 @@ char *file_name;
   if ((n = read(fd, head, header_len - 8)) != header_len - 8)
         pexit("header too short: ", file_name);
 
-  *text_bytes = (unsigned) head[TEXT_POS];
-  *data_bytes = (unsigned) head[DATA_POS];
-  *bss_bytes  = (unsigned) head[BSS_POS];
-  *sym_bytes  = (unsigned) head[SYM_POS];
+  *text_bytes = head[TEXT_POS];
+  *data_bytes = head[DATA_POS];
+  *bss_bytes  = head[BSS_POS];
+  if (bss16_flag) *bss_bytes &= 0xffffU;
+  *sym_bytes  = head[SYM_POS];
+  if (0) fprintf(stderr, "!! READHEAD a_text=0x%lx=%lu a_data=0x%lx=%lu a_bss=0x%lx=%lu\n", *text_bytes, *text_bytes, *data_bytes, *data_bytes, *bss_bytes, *bss_bytes);
 #endif
 
   if (!sym_flag)
