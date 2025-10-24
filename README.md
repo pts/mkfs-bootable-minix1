@@ -74,3 +74,14 @@ more than 640 KiB of memory, then download the kernel using
 as `./demo_minix_1.5_8086_qemu.sh minix_1.5_8086_qemu_pm.bin` instead. This
 kernel was modified and compiled by freebird or gohigh on 2003-01-04 (see
 [oldlinux.org](https://oldlinux.org/)).
+
+A Minix 1.5 kernel image consists of the following components (in this
+order): bootblok, kernel, mm, fs, init, menu, db. After booting, only the
+kernel, mm, fs and init components remain in memory. The Shoelace boot
+manager, in addition to booting a kernel image file, is able to boot a Minix
+kernel using the 4 in-memory component files (kernel, mm, fs and init). To
+facilitate this, mkfs-bootable-minix1 provides the Perl script
+[split_minix_kernel.pl](split_minix_kernel.pl), which splits a Minix 1.5
+kernel image to its 4 in-memory component files. It's also possible to save
+disk space by splitting, because the NUL bytes of BSS sections are included
+in the kernel image files, but not inthe component files.
