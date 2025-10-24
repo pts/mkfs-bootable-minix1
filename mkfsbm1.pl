@@ -4,7 +4,7 @@ eval 'PERL_BADLANG=x;export PERL_BADLANG;exec perl -x "$0" "$@";exit 1'
 +0 if 0;eval("\n\n\n\n".<<'__END__');die$@if$@;__END__
 
 #
-# mkfsbm1: create a bootable Minix 1 filesystem
+# mkfsbm1.pl: create a bootable Minix 1 filesystem
 # by pts@fazekas.hu at Tue Oct 21 16:32:49 CEST 2025
 # 
 
