@@ -90,6 +90,7 @@ sub read_file($;$) {
     die("fatal: error reading file: $fn\n") if !defined($got = sysread(FR, $s, $try_size, length($s)));
     last if !$got;  # Error on EOF.
   }
+  close(FR);
   $s
 }
 
@@ -350,5 +351,6 @@ if ($do_add_vhd_footer) {  # Add a Virtual PC .vhd footer to make it easy to use
   $vhd_footer .= "\0" x (0x200 - length($vhd_footer));
   write_block($vhd_size >> 10, $vhd_footer);
 }
+close(F);
 
 __END__
