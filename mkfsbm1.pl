@@ -217,7 +217,7 @@ if (defined($kernel_fn)) {
     if ($reserved_data =~ m@^\xeb\x04 .. (..) \xfa \xfc \x2e\x8b\x16\x04\x00 \x8e\xda \x8e\xc2 \x8e\xd2 \xbc@sx) {
       my $kernel_cs = 0x60; my $kernel_ds = unpack("v", $1);
       die(sprintf("fatal: bad kernel_ds=0x%x: %s\n", $kernel_ds, $kernel_fn)) if $kernel_ds <= 0x60 or $kernel_ds >= 0x60 + (length($reserved_data) >> 4);
-      my($kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256) = unpack("v8", substr($reserved_data, ($kernel_ds - 0x60) << 4));
+      my($kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256) = unpack("v8", substr($reserved_data, ($kernel_ds - 0x60) << 4, 0x10));
       my $kernel_size_para = length($reserved_data) >> 4;
       my $kernel_sum_size_para = ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256 + $fs_data_a256 + $init_text_a256 + $init_data_a256) << 4;
       printf(STDERR "info: Minix kernel kernel_cs=0x%x kernel_ds=0x%x size=0x%x0 sum_size=0x%x0 kernel_para=0x%x0+0x%x0 mm_para=0x%x0+0x%x0 fs_para=0x%x0+0x%x0 init_para=0x%x0+0x%x0 f=%s\n",
