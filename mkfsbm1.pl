@@ -220,10 +220,19 @@ if (defined($kernel_fn)) {
       my($kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256) = unpack("v8", substr($reserved_data, ($kernel_ds - 0x60) << 4, 0x10));
       my $kernel_size_para = length($reserved_data) >> 4;
       my $kernel_sum_size_para = ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256 + $fs_data_a256 + $init_text_a256 + $init_data_a256) << 4;
-      printf(STDERR "info: Minix kernel kernel_cs=0x%x kernel_ds=0x%x size=0x%x0 sum_size=0x%x0 kernel_para=0x%x0+0x%x0 mm_para=0x%x0+0x%x0 fs_para=0x%x0+0x%x0 init_para=0x%x0+0x%x0 f=%s\n",
-             $kernel_cs, $kernel_ds, $kernel_size_para, $kernel_sum_size_para, $kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256, $kernel_fn);
+      # Our $kernel_magic has been overwritten with $kernel_text_a256 and $kernel_data_a256.
+      my $mm_magic   = ($kernel_size_para < $kernel_sum_size_para) ? 0xffffffff : unpack("V", substr($reserved_data, ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256) << 8, 4));
+      my $fs_magic   = ($kernel_size_para < $kernel_sum_size_para) ? 0xffffffff : unpack("V", substr($reserved_data, ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256) << 8, 4));
+      my $init_magic = ($kernel_size_para < $kernel_sum_size_para) ? 0xffffffff : unpack("V", substr($reserved_data, ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256 + $fs_data_a256 + $init_text_a256) << 8, 4));
+      printf(STDERR "info: Minix kernel kernel_cs=0x%x kernel_ds=0x%x size=0x%x0 sum_size=0x%x0 kernel_para=0x%x0+0x%x0 mm_para=0x%x0+0x%x0 fs_para=0x%x0+0x%x0 init_para=0x%x0+0x%x0 mm_magic=0x%x fs_magic=0x%x init_magic=0x%x f=%s\n",
+             $kernel_cs, $kernel_ds, $kernel_size_para, $kernel_sum_size_para, $kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256, $mm_magic, $fs_magic, $init_magic, $kernel_fn);
       die("fatal: inconsistent Minix kernel_text_a and kernel_ds: $kernel_fn\n") if $kernel_cs + ($kernel_text_a256 << 4) != $kernel_ds;
       die("fatal: inconsistent Minix kernel size and sum_size: $kernel_fn\n") if $kernel_size_para != $kernel_sum_size_para;
+      die("fatal: kernel image is not long enough: $kernel_fn\n") if length($reserved_data) < ($kernel_sum_size_para << 4);
+      #die("fatal: bad kernel_magic: $kernel_fn\n") if $kernel_magic != 0x8526f;  # Checked by /shoelace. Our $kernel_magic has been overwritten with $kernel_text_a256 and $kernel_data_a256.
+      die("fatal: bad mm_magic: $kernel_fn\n") if $mm_magic != 0x8dada;  # Also checked by /shoelace.
+      die("fatal: bad fs_magic: $kernel_fn\n") if $fs_magic != 0x8dada;  # Also checked by /shoelace.
+      #die("fatal: bad init_magic: $kernel_fn\n") if $init_magic != 0x8dada;  # Not checked by /shoelace. init_magic is not set for the original 8086 kernel pc/disk.03.
       substr($reserved_data, $kernel_size_para << 4) = "";
     } elsif ($reserved_data =~ m@^\x9c \x0e \x50 \x51 \x52 \x53 \x55 \x56 \x57 \x0e \x8c\xc8 \xbf@sx) {  # Compressed kernel.
       # Just use the entire file as a compressed kernel image.
