@@ -174,11 +174,16 @@ if (defined($boot_fn)) {
     # The bootlace a.out executable file of the Shoelace boot manager.
     $boot_data = substr($boot_data, 0, $a_text);
     substr($boot_data, 0x1fe, 0) = "\x55\xaa";  # Insert the boot signature word.
+    goto FIX_SHOELACE;
   } elsif ($boot_data =~ m@^\x01\x03[\0\x10\x20\x30][\x04\x10]@sx) {
     die("fatal: unrecognized a.out file for --boot=: $boot_fn\n");
   } elsif ($boot_data =~ s@^\xeb\x29 \x99 ShoeLace\0\x02.{30} (\xea\x30\0\xc0\x07)@\xeb\x29\x99ShoeLace\0\x02\x02\x02\0\0\0\0\0\0$md\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0$1@sx) {
     # A bootlace image of the Shoelace boot manager, extracted from the boot block of an existing Minix filesystem (floppy boot sector or HDD MBR);
     die("fatal: boot signature not found in bootlace image: $boot_fn\n") if length($boot_data) < 0x200 or substr($boot_data, 0x1fe, 2) ne "\x55\xaa";
+   FIX_SHOELACE:
+    # bootlace tries to find the Minix filesystem on a partition, but we have it on the entire disk. So we binary patch the bootlace code below to use the entire disk.
+    die("fatal: partition start code not found in bootlace image: $boot_fn\n") if substr($boot_data, 0x42, 20) ne "\x26\xff\x74\x02\x26\x8a\x74\x01\x52\x26\xc4\x44\x08\xa3\x1c\x00\x8c\x06\x1e\x00";  # push word [es:si+2] ++ mov dh, [es:si+1] ++ push dx ++ les ax, [es:si+8] ++ mov [0x1c], ax ++ mov [0x1e], es.
+    substr($boot_data, 0x42, 20) = "\x31\xc0\xa3\x1c\x00\xa3\x1e\x00\x40\x50\xb6\x00\x52\x90\x90\x90\x90\x90\x90\x90";  # xor ax, ax ++ mov [0x1c], ax ++ mov [0x1e], ax ++ inc ax ++ push ax ++ mov dh, 0 ++ push dx ++ nop. Use first sector: CHS 0:0:1, LBA 0.
   }
   die("fatal: boot image too long: $boot_fn\n") if length($boot_data) > 0x400;
   $boot_data .= "\0" x (0x400 - length($boot_data));
