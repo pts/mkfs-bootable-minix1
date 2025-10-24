@@ -233,6 +233,22 @@ if (defined($kernel_fn)) {
       die("fatal: bad mm_magic: $kernel_fn\n") if $mm_magic != 0x8dada;  # Also checked by /shoelace.
       die("fatal: bad fs_magic: $kernel_fn\n") if $fs_magic != 0x8dada;  # Also checked by /shoelace.
       #die("fatal: bad init_magic: $kernel_fn\n") if $init_magic != 0x8dada;  # Not checked by /shoelace. init_magic is not set for the original 8086 kernel pc/disk.03.
+      die("fatal: bad mm start: $kernel_fn\n") if substr($reserved_data, ($kernel_text_a256 + $kernel_data_a256) << 8, 0x30) !~ m@^\xeb\x1a .{26} \x8b(?:(\x25)..\0\0 \xe8..\0\0 | \x26.. \xe8..)@sx;
+      my $is_mm_i386 = defined($1);  # Not checking kernel text, because it always starts with 8086 (16-bit) code.
+      die("fatal: bad fs start: $kernel_fn\n") if substr($reserved_data, ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256) << 8, 0x30) !~ m@^\xeb\x1a .{26} \x8b(?:(\x25)..\0\0 \xe8..\0\0 | \x26.. \xe8..)@sx;
+      my $is_fs_i386 = defined($1);
+      die("fatal: bad init start: $kernel_fn\n") if substr($reserved_data, ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256 + $fs_data_a256) << 8, 0x30) !~ m@^\xeb\x1a .{26} \x8b(?:(\x25)..\0\0 \xe8..\0\0 | \x26.. \xe8..)@sx;
+      my $is_init_i386 = defined($1);
+      my $pmswitch = "unknown";  # Switch mechanism used to switch to protected mode.
+      if ($reserved_data =~ m@^.{43} \xbe.. \xbb\x30\x28 \xb4\x89 \xcd\x15 \xc3@sx) {  # mov si, ... ++ mov bx, 0x2830 ++ mov ah, 0x89 ++ int 0x15 ++ ret.
+        $pmswitch = "int15h"  # This can be 8086 or i386.
+      } elsif ($reserved_data =~ m@^.{43} \x0f\x01\x16.. \x0f\x20\xc0@sx or  # lgdt [...] ++ mov eax, cr0 ++ or al, 1 ++ mov cr0, eax.
+               $reserved_data =~ m@^.{43} \xbe.. \xbb\x30\x28 \xb4. \xe8.\0 (?:[\xeb\xb0\xe6]. | \x88[\xf8\xd8])+ \x0f\x01\x16.. \x0f\x20\xc0@sx) {  # mov si, ... ++ mov bx, 0x2830 ++ mov ah, ... (0) ++ call ... ++ (lots mov()s and out()s) ++ lgdt [...] ++ mov eax, cr0 ++ or al, 1 ++ mov cr0, eax.
+        $pmswitch = "lgdt-cr0-i386"
+      }
+      printf(STDERR "info: Minix kernel CPU mm=%s fs=%s init=%s pmswitch=%s f=%s\n", ($is_mm_i386 ? "i386" : "8086"), ($is_fs_i386 ? "i386" : "8086"), ($is_init_i386 ? "i386" : "8086"), $pmswitch, $kernel_fn);
+      die("fatal: inconsistent CPU among mm, fs, init: $kernel_fn\n") if $is_mm_i386 != $is_fs_i386 or $is_mm_i386 != $is_init_i386;
+      die("fatal: inconsistent CPU and pmswitch: $kernel_fn\n") if !$is_mm_i386 and $pmswitch =~ m@i386@;
       substr($reserved_data, $kernel_size_para << 4) = "";
     } elsif ($reserved_data =~ m@^\x9c \x0e \x50 \x51 \x52 \x53 \x55 \x56 \x57 \x0e \x8c\xc8 \xbf@sx) {  # Compressed kernel.
       # Just use the entire file as a compressed kernel image.
