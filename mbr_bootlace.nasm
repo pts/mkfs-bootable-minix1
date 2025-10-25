@@ -136,7 +136,6 @@ _start:
 _main:
 ; The drive number is still in dl. es:si points at
 ; partition table entry if hard disk boot.
-		cld  ; direction is up
 		mov ax, LOADSEG  ; current code segment
 		mov ds, ax  ; data addressable
 		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
@@ -146,13 +145,14 @@ _main:
 ; Find out the parameters of the hard disk if this is a hard disk
 ; boot. The only way to find out the number of heads and the number
 ; of sectors per track is to ask.
-		mov [_diskcode], dl  ; code for boot disk
+		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
+		mov [byte di+_diskcode], dl  ; code for boot disk
 		test dl, dl
 		jns short fatal_lost  ; On floppy.
-		xor di, di  ; Workaround for buggy BIOS. Also the 0 value will be used later.
 		mov es, di  ; Workaround for buggy BIOS.
 		push dx  ; The AH==8 call below overwrites DL.
 		; The BIOS may jump to 0:0x7c00, 0x7c0:0 or any combination. We don't care for CS, because we use only relative jumps. We've already set DS := LOADSEG == 0x7c0.
+		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
 		jmp short cont_main
 		times 0x1c-($-_start) hlt  ; shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
 _diskcode: equ _start+2  ; db .bios_boot_drive_number. shoemain(...) in /shoelace expects _diskcode to be at _start+2.
@@ -164,9 +164,10 @@ _hidden:	dd 0  ; dd .hidden_sector_count value. LBA sector offset of the start o
   times -1 nop
 %endif
 fatal_lost:
+		mov byte [_noshoename+4], 0  ; Just display 'Lost'.
+fatal_lost_file:
 		mov si, _noshoename
-		mov byte [si+4], 0  ; Just display 'Lost'.
-_fatal:
+fatal_si:
 .nextchar:
 		lodsb
 		test al, al  ; check for null char
@@ -183,7 +184,7 @@ _fatal:
 ; !! Can we fix floppy support in QEMU 2.11.1 running Minix 1.5 by populating dskbase (11 bytes at _start+0x20) with the correct DPT (https://fd.lod.bz/rbil/interrup/bios/1e.html#2483)?
 ;    shoemain(...) in /shoelace does memcpy(dskbase, &bpb[B_FPT_P], sizeof(dskbase));
 cont_main:
-		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
+		cld  ; direction is up
 		int 0x13  ; BIOS disk syscall. This call changes ES and DI only if DL is a floppy drive.
 		jc short fatal_lost
 
@@ -407,7 +408,7 @@ _checkfilesize:
 _scanzone:
 		push bp
 		mov bp, sp
-		sub sp, 0x408  ; word [bp-0x8] is also unused.
+		sub sp, 0x408  ; word [bp-0x8], word [bp-0x2], word [bp-0x4] are unused. Large (>1 KiB) stack usage because of the tp buffer of size 0x400 bytes.
 		push si
 		push di
 .1:
@@ -434,32 +435,36 @@ _scanzone:
 _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
 		mul cx  ; convert to blocks
 
-		mov [bp-0x4], ax
-		mov [bp-0x2], dx
+		mov si, ax
+		mov di, dx
 		mov [bp-0x6], cx
 .2:
-		lea ax, [bp-0x408] ; Large (>1 KiB) stack usage.
+		;mov ax, sp  ; This would work only without `push si' and `push di' above. With them, reorganizing it doesn't bring any savings.
+		lea ax, [bp-0x408]  ; tb.
+		push ax  ; Save tb pointer value.
 		push ax
-		push word [bp-0x2]
-		push word [bp-0x4]
-		add word [bp-0x4], byte +0x1
-		adc word [bp-0x2], byte +0x0
+		push di
+		push si
+		add si, byte +0x1
+		adc di, byte +0x0
 		call _readblock
 		add sp, byte +0x6
+		pop bx  ; Restore BX := tb pointer value.
 		cmp word [bp+0x6], byte +0x0
 		jz short .3
+		push bx  ; Save BX (tb). The `call _scanzone' below ruins it.
 		mov ax, [bp+0x6]
 		dec ax
 		push word [bp+0xa]
 		mov cx, 0x200  ; sizeof(tb) / sizeof(zone_nr).
 		push cx
 		push ax
-		lea ax, [bp-0x408]
-		push ax
+		push bx
 		call _scanzone
 		add sp, byte +0x8
+		pop bx  ; Restore BX (tb).
 .3:
-		lea bx, [bp-0x408]  ; The argument `tb' of _dirscan_or_readshoe is passed in register BX.
+		; mov bx, bx  ; The argument `tb' of _dirscan_or_readshoe is passed in register BX.
 		cmp [bp+0xa], byte 0  ; _dirscan_or_readshoe will use the resulting FLAGS.
 		call _dirscan_or_readshoe  ; (*fn)(tb). Instead of a function pointer, we use 0 for _dirscan and nonzero for _readshoe.
 		test ax, ax
@@ -470,7 +475,7 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
 		jnz short .1
 .6:
 .j_dsret:
-		jmp strict near dsret
+		jmp strict short dsret
 
 		;times 0x1b8-35-($-_start) hlt  ; Move di_is_small_enough as late as possible, for the short jumps below.
 
@@ -501,11 +506,13 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
 ;_readshoe:
 ;		push si
 ;		push di
-;.in:
 ;		xor ax, ax
 ;		cmp al, 1  ; Self-modifying code: the constant 1 will be modified to 0 below.
 ;_startload: equ $-1  ; unsigned char startload = 1;
-_readshoe.in2:
+_readshoe.in:
+		xor ax, ax
+		cmp al, 1  ; Self-modifying code: the constant 1 will be modified to 0 below.
+_startload: equ $-1  ; unsigned char startload = 1;
 		je short .1
 		dec byte [_startload]  ; _startload := 0.
 		mov al, [bx+0x4]
@@ -619,38 +626,33 @@ _dirscan_or_readshoe:
 		push si
 		push di
 		jz short _dirscan.in  ; We use this inestead of a function pointer.
-_readshoe.in: equ $
-		xor ax, ax
-		cmp al, 1  ; Self-modifying code: the constant 1 will be modified to 0 below.
-_startload: equ $-1  ; unsigned char startload = 1;
-		jmp near _readshoe.in2
+		jmp near _readshoe.in
 _dirscan.in:
 		lea cx, [bx+0x400]  ; CX will keep holding edp.
+		push ds
+		pop es  ; For the `cmpsb' below.
 .1:
 		xor ax, ax  ; Function return value.
 		cmp cx, bx
 		jna short .6
-		mov dx, [bx]
-		test dx, dx
+		mov ax, [bx]  ; thisnode. This will also be the function return value.
+		test ax, ax
 		jz short .3
 		mov si, _lacename
-		lea di, [bx+0x2]
+		lea di, [bx+2]  ; Skip over d_inum.
 .2:
-		lodsb
-		cmp al, [di]
+		cmpsb
 		jne short .3
-		inc di
 		cmp byte [di-1], 0x0
 		jne short .2
-		xchg ax, dx  ; AX := DX; DX := junk.
-		jmp short .6
+		jmp short .6  ; Return the value of [bx].
 .3:
 		sub word [_filesize], byte 0x10
 		sbb word [_filesize+2], byte 0
-		call _checkfilesize  ; It doesn't modify CX or DX.
+		call _checkfilesize  ; It doesn't modify ES, CX or DX.
 		;or ax, ax  ; Not needed, _checkfilesize has set the FLAGS.
 		jng short .4
-		add bx, byte +0x10
+		add bx, byte 0x10  ; sizeof(dir_struct).
 		jmp short .1
 .4:
 		mov ax, 1  ; ROOT_INODE.
@@ -773,9 +775,8 @@ _shoehorn:
 .4:
 		cmp ax, strict word 1  ; ROOT_INODE.
 		ja short .6
-		mov si, _noshoename
-		mov byte [byte si-_noshoename+_endshoename], 0xd  ; The message would be comprehensible without the CRLF at the end.
-		jmp strict near _fatal  ; Doesn't return.
+		mov byte [_endshoename], 13  ; The message would be comprehensible without the CRLF at the end.
+		jmp strict near fatal_lost_file  ; Doesn't return.
 .6:
 		inc word [byte bp-0x8]  ; Set to nonzero, indicate _readshoe as the fake function pointer.
 		dec ax  ; AX (minixnode) -= 1.
