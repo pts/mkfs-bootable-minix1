@@ -7,6 +7,8 @@ image file, an MBR image file file, and create a Minix 1 filesystem from
 them, which can be booted as a hard disk (HDD) image in emulators such as
 QEMU and VirtualBox.
 
+## The simple way to create a bootable Minix 1 filesystem
+
 An end-to-end demo script
 [demo_minix_1.5_8086_qemu.sh](demo_minix_1.5_8086_qemu.sh) is also included.
 It compiles the MBR boot code
@@ -66,6 +68,82 @@ To make it easier to use the disk image with VirtualBox, run *mkfsbm1.pl
 after the Minix filesystem. QEMU doesn't care, it accepts the default
 raw disk images. Having the Virtual PC .vhd footer doesn't break QEMU or the
 Linux kernel mounting the filesystem.
+
+## Creating a bootable Minix 1 filesystem using Shoelace
+
+Shoelace is the bootloader which understand minix1 filesystem, load the
+kernel from any file on the filesystem (even if the file is fragmented), and
+boot it. Shoelace was released in 1989. The version tested here is from
+1990-04-24. Here is how booting from HDD typically works with Shoelace:
+
+1. As usual, the PC BIOS loads the Master Boot Record (MBR) from LBA sector
+   0, and starts running it in real mode at 0:0x7c00.
+2. The MBR contains the boot code which looks at the parititon table,
+   decides which partition to boot (maybe taking user input, maybe just
+   booting the first active partition), loads the boot sector (very first
+   sector) of that tpartition, and starts running it in real mode at
+   0:0x7c00.
+3. The boot sector contains the first sector of bootlace, one of the
+   components of the Shoelace boot manager. It loads the second sector
+   (right after the boot sector) of bootlace, and the resulting code loads
+   the file named */shoelace* (typical size: 47 KiB, including symbols) on
+   the minix1 filesystem on that partition, and starts running it in real
+   mode at 0x1000:0. The bootlace code is smart enough to understand and
+   read a minix1 filesystem (superblock, root inode, root directory, file
+   inode, file data). It can load a file even if it's fragmented.
+4. The /shoelace component of Shoelace loads its config file */etc/config* on
+   the Minix1 filesystem, and loads and boots the kernel specified in the
+   config file. Typically it is used (and it's more convenient to use it) to
+   load Minix kernel component files (kernel, mm, fs and init) rather than
+   the full kernel image file. The kernel component files are typically in
+   the directory */etc/system*.
+
+Shoelace can also boot from floppy.
+
+Shoelace is not able to boot from a minix1 filesystem spanning over an
+entire HDD (e.g. */dev/hd0*), it works only with filesystems on a partition.
+However, by replacing the bootlace component with something else, the
+replacement can convince the /shoelace component to boot that way. In this
+case, the boot process will work like this:
+
+1. The PC bios loads the MBR, which contains the first sector of the
+   replacement bootlace, and the fake partition table. The fake partition
+   table contains partition 4 (/dev/hd4 on Minix), which spans over the HDD
+   (i.e. starts at LBA sector 0, CHS sector 0:0:1).
+2. The first sector of the replacement bootlace loads the second sector.
+3. The replacement bootlace code loads the the file named
+   */sheolace*, which is an unmodified /shoelace component of Shoelace.
+4. /shoelace thinks that the minix1 filesystem is on parititon 4, finds its
+   */etc/config* file there, and boots the Minix kernel with /dev/hd4 as the
+   root filesystem.
+5. Minix happily mounts the minix1 filesystem as /dev/hd4, and boots from it.
+
+This replacement bootlace is provided in NASM source file
+[mbr_bootlace.nasm](mbr_bootlace.nasm). After compiling it (e.g. on Linux),
+you can run `./mkfsbm1.pl --boot=mbr_bootlace.bin hd.img` to create a minix1
+filesystem with it preinstalled to the MBR.
+
+If you have a Minix kernel image, then extract the 4 component files kernel,
+mm, fs, and init using
+[split_minix_kernel.pl](https://github.com/pts/mkfs-bootable-minix1/blob/master/split_minix_kernel.pl).
+
+After that, you still have to
+copy the remaining files to the filesystem: */shoelace*,
+*/etc/system/kernel*, */etc/system/mm*, */etc/system/fs*,
+*/etc/system/init*. The contents of */etc/config* should be:
+
+```
+kernel /etc/system/kernel
+mm /etc/system/mm
+fs /etc/system/fs
+init /etc/system/init
+```
+
+After this setup, it will boot in QEMU. (See a working QEMU command line in
+the demo script [demo_minix_1.5_8086_qemu.sh](demo_minix_1.5_8086_qemu.sh).
+Tested on QEMU 2.11.1.)
+
+## More about Minix 1.5 kernels
 
 If you want to run Minix 1.5 8086 in 16-bit protected mode instead, using
 more than 640 KiB of memory, then download the kernel using
