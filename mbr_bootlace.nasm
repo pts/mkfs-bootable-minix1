@@ -2,8 +2,9 @@
 ; mbr_bootlace.nasm: Minix 1.5 bootlace boot code that can be put to a HDD MBR
 ; MBR-specific code and size optimizations by pts@fazekas.hu at Fri Oct 24 19:14:53 CEST 2025
 ;
-; Compile for /shoelace with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -o mbr_bootlace.bin mbr_bootlace.nasm
-; Compile for /minix    with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMINIX -o mbr_bootminix.bin mbr_bootlace.nasm
+; Compile for /shoelace  with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSHOELACE -o mbr_bootlace.bin  mbr_bootlace.nasm
+; Compile for /minix 1.5 with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMINIX    -o mbr_bootminix.bin mbr_bootlace.nasm
+; Compile for /boot      with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DBOOT     -o mbr_bootboot.bin  mbr_bootlace.nasm
 ;
 ; Based on the following Minix 1.5 source files:
 ;
@@ -12,12 +13,13 @@
 ; * /usr/oz/shoelace/shoebfs.c (1990-04-24)
 ; * /usr/oz/shoelace/shoeboot.c (1990-04-24)
 ;
-; This boot code can boot Minix 1.5 (both 8086 and i386) from a HDD which
-; doesn't have partitions, but the minix1 filesystem is created to span over
-; the entire HDD (i.e. /dev/hd0).
+; This boot code can boot Minix >=1.6 (both i86 and i386) from a HDD which
+; doesn't have partitions, but the minix1 filesystem (with s_magic is created to span over
+; the entire HDD (i.e. /dev/hd0). It can't boot from a minix2 filesystem
+; (introduced in Minix 1.6, boot floppies already use it).
 ;
 ; Here is how you should prepare such a bootable filesystem image for
-; mbr_minix.bin:
+; mbr_bootminix.bin:
 ;
 ; 1. Create the Minix filesystem.
 ; 2. Copy your minix kernel image file (typically larger than 128 KiB) as
@@ -35,7 +37,7 @@
 ; Here is how you should prepare such a bootable filesystem image for
 ; mbe_bootlace.bin:
 ;
-; 1. Create the Minix filesystem.
+; 1. Create the minix1 filesystem.
 ; 2. Copy the file named shoelace of the ShoeLace bootloader to the root
 ;    directory of the fileystem.
 ; 3. If you have a Minix kernel image, then extract the 4 component files
@@ -107,12 +109,17 @@
 ; --- Compile-time configuration (`nasm -D...').
 
 %ifdef MINIX
-  %define MINIX 1
+  %define MINIX 1  ; This can boot a Minix 1.5 (either i86 or i386) kernel image in /minix. It can't boot Minix >=1.6.
 %else
   %define MINIX 0
 %endif
+%ifdef BOOT
+  %define BOOT 1  ; This can boot a Minix 1.7.0 boot monitor in /boot. !! Maybe it works with 1.6 and 2.0 as well.
+%else
+  %define BOOT 0
+%endif
 %ifdef SHOELACE
-  %define SHOELACE 1
+  %define SHOELACE 1  ; This can boot a ShoeLace bootloader (used to boot Minix 1.5) in /shoelace.
 %endif
 %ifdef BOOTLACE
   %define SHOELACE 1
@@ -121,10 +128,10 @@
 %ifndef SHOELACE
   %define SHOELACE 0
 %endif
-%if MINIX+SHOELACE==0
+%if MINIX+SHOELACE+BOOT==0
   %define SHOELACE 1  ; Default.
 %endif
-%if MINIX+SHOELACE>1
+%if MINIX+SHOELACE+BOOT>1
   %error ERRROR_MULTIPLE_BOOT_METHODS_SELECTED
   times -1 nop
 %endif
@@ -196,16 +203,15 @@ NUL equ 0   ; ASCII NUL '\0'.
 ; * DL: BIOS drive number (80h hard disk, 00h floppy disk, etc.)
 _start:
 _main:
+; BIOS has put the boot drive number to DL.
 %if SHOELACE
-  LOADSEG   equ  0x7c0  ; here the boot block itself is loaded
-  IMAGE_SEG equ 0x1000  ; Load the /shoelace image here (at IMAGE_SEG:0).
-  ; The drive number is still in dl. es:si points at
-  ; partition table entry if hard disk boot.
-		mov ax, LOADSEG  ; current code segment
+  IMAGE_SEG equ 0x1000  ; We will load the /shoelace image here (at IMAGE_SEG:0).
+  MBR_LOAD_SEG equ 0x7c0  ; The BIOS has loaded our code (from _start) to MBR_LOAD_SEG:0.
+		mov ax, MBR_LOAD_SEG  ; current code segment
 		mov ds, ax  ; data addressable
 		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
 		mov ss, ax  ; stack addressable
-		mov sp, -LOADSEG<<4
+		mov sp, -MBR_LOAD_SEG<<4
 		sti
 		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
 		mov [byte di+_diskcode], dl  ; code for boot disk
@@ -213,17 +219,21 @@ _main:
 		jns short fatal_lost  ; On floppy.
 		mov es, di  ; Workaround for buggy BIOS.
 		push dx  ; The AH==8 call below overwrites DL.
-		; The BIOS may jump to 0:0x7c00, 0x7c0:0 or any combination. We don't care for CS, because we use only relative jumps. We've already set DS := LOADSEG == 0x7c0.
+		; The BIOS may jump to 0:0x7c00, 0x7c0:0 or any combination. We don't care for CS, because we use only relative jumps. We've already set DS := MBR_LOAD_SEG == 0x7c0.
 		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
 		jmp short cont_main
 		times 0x1c-($-_start) hlt  ; shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
   _n_sectors: equ _start+0x18  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8. shoemain(...) in /shoelace expects _n_sectors to be at _start+0x18.
   _n_heads: equ _start+0x1a  ; dw .head_count value. It will be autodected with int 13h AH==8. shoemain(...) in /shoelace expects _n_heads to be at _start+0x1a.
-%endif
-%if MINIX
-  IMAGE_SEG equ 0x60  ; Load the /minix image here (at IMAGE_SEG:0).
+  _hidden: dd 0  ; dd .hidden_sector_count value. LBA sector offset of the start of the partition. Must be initialized to 0. shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
+  %if _hidden!=_start+0x1c
+    %error ERROR_BAD_LOCATION_FOR_HIDDEN
+    times -1 nop
+  %endif
+%elif MINIX
+  IMAGE_SEG equ 0x60  ; We will load the /minix image here (at IMAGE_SEG:0).
   ; Leave ((0x9000-0x60)<<4)/1024 == 574.5 KiB for the Minix kernel. Typical
-  ; Minix 1.5 8086 kernels images are <154 KiB. Typical Minix 1.5 i386
+  ; Minix 1.5 i86 kernels images are <154 KiB. Typical Minix 1.5 i386
   ; kernel images are <497 KiB (most of these are BSS NUL bytes).
   BOOT_COPY_SEG equ 0x9000
 		xor di, di
@@ -244,19 +254,34 @@ _main:
 		jns short fatal_lost  ; On floppy.
 		mov es, di  ; Workaround for buggy BIOS.
 		push dx  ; The AH==8 call below overwrites DL.
-		; The BIOS may jump to 0:0x7c00, 0x7c0:0 or any combination. We don't care for CS, because we use only relative jumps. We've already set DS := LOADSEG == 0x7c0.
 		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
 		jmp BOOT_COPY_SEG:cont_main-_start
   .boot_copy_seg: equ $-2
   _n_sectors: equ _start+0  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8.
   _n_heads: equ _start+8  ; dw .head_count value. It will be autodected with int 13h AH==8.
-%endif
-%if MINIX==0  ; Not needed when booting /minix, the value is always 0.
-  _hidden: dd 0  ; dd .hidden_sector_count value. LBA sector offset of the start of the partition. Must be initialized to 0. shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
-  %if SHOELACE && _hidden!=_start+0x1c
-    %error ERROR_BAD_LOCATION_FOR_HIDDEN
-    times -1 nop
-  %endif
+%elif BOOT
+  IMAGE_SEG equ 0x1000  ; We will load the /boot image here (at IMAGE_SEG:0).
+  MBR_LOAD_SEG equ 0x7c0  ; The BIOS has loaded our code (from _start) to MBR_LOAD_SEG:0.
+		mov ax, MBR_LOAD_SEG  ; current code segment
+		mov ds, ax  ; data addressable
+		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
+		mov ss, ax  ; stack addressable
+		mov sp, -MBR_LOAD_SEG<<4
+		sti
+		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
+		mov [byte di+_diskcode], dl  ; code for boot disk
+		test dl, dl
+		jns short fatal_lost  ; On floppy.
+		mov es, di  ; Workaround for buggy BIOS.
+		push dx  ; The AH==8 call below overwrites DL.
+		; The BIOS may jump to 0:0x7c00, 0x7c0:0 or any combination. We don't care for CS, because we use only relative jumps. We've already set DS := MBR_LOAD_SEG == 0x7c0.
+		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
+		jmp short cont_main
+  _n_sectors: equ _start+0  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8.
+  _n_heads: equ _start+8  ; dw .head_count value. It will be autodected with int 13h AH==8.
+%else
+  %error ERROR_UNSUPPORTED_MODE_FOR_MAIN
+  times -1 nop
 %endif
 _diskcode: equ _start+2  ; db .bios_boot_drive_number. shoemain(...) in /shoelace expects _diskcode to be at _start+2.
 _filesize: equ _start+4  ; dd. long filesize; size of image file or directory. 4 bytes. Alternatively, this could also be in the BSS, but we have it here for fun.
@@ -325,9 +350,9 @@ cont_main:
 		push ds  ; Segment used by _main(...) in /shoelace for getting e.g. _diskcode (see above).
 		;push ax  ; Dummy value, popped by _main(...) in /shoelace. We don't push it, because the `call' below pushes a value.
 		call _loadandrunimage
-%elif MINIX
+%elif MINIX+BOOT
 		call _loadandrunimage
-		; Fall through to jump_to_minix.
+		; Fall through to jump_to_minix or jump_to_boot.
 %else
   %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_LOAD
   times -1 nop
@@ -355,6 +380,19 @@ cont_main:
 		jmp IMAGE_SEG:0  ; Jump to the entry point of the kernel component of the Minix kernel image: MINIX in /usr/src/kernel/start.x.
 %endif
 
+%if BOOT
+  jump_to_boot:
+  ; Load protocol for /boot when booting from HDD:
+  ; * Set ES:SI to point to partition entry in the partition table (0x10 bytes).
+  ; * Set DL to the BIOS drive number (_diskcod, typically 0x80).
+  ; * Jump to IMAGE_SEG:0x20 (for short a.out header, typical) or IMAGE_SEG:0x30 (for long a.out header, safer).
+		mov dl, [_diskcode]
+		push ds
+		pop es
+		mov si, bootable_partition
+		jmp IMAGE_SEG:0x30  ; Jump to the entry point of the Minux >=1.6 boot monitor: boot in /usr/src/boot/boothead.S  . Offset 0x30 would also work.
+%endif
+
 ; The boot code will use the tiny model in which code and data occupy
 ; the same 64kb segment. Because of the space constraints, the data
 ; used for the boot block cannot be placed in the DATA segment
@@ -368,9 +406,13 @@ cont_main:
 _noimgname:	db 'Lost '
 %if SHOELACE
   _imgname1:	db '/shoelace'
-%endif
-%if MINIX
+%elif MINIX
   _imgname1:	db '/minix'
+%elif BOOT
+  _imgname1:	db '/boot'
+%else
+  %error ERROR_UNSUPPORTED_MODE_FOR_IMGNAME1
+  times -1 nop
 %endif
 _endimgname:	db NUL, LF, NUL
 
@@ -523,6 +565,8 @@ _checkfilesize:
 ; #define NR_ZONE_NUMS 9  /* # zone numbers in an inode */
 ; #define SUPER_BLOCK 1
 ; #define ROOT_INODE 1
+; #define SUPER_MAGIC 0x137f  /* Value for s_magic in minix1 */
+; #define UNSUPPORTED_SUPER_MAGIC_V2 0x2468  /* Value for s_magic in minix2. */
 ; struct super_block {  /* At start of block SUPER_BLOCK. */
 ;   ino_t s_ninodes;              /* # usable inodes on the minor device */
 ;   zone_nr s_nzones;             /* total device size, including bit maps etc */
@@ -665,25 +709,9 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
 		pop bx  ; Restore for the caller.
 		jmp strict short dsret
 
-%macro emit_partition_table 0
-		times 0x1b8-($-_start) hlt
-  %if SHOELACE
-    disk_id_signature: db 'BotL'
-  %else
-    disk_id_signature: db 'MinX'
-  %endif
-  ;assert_at .header+0x1bc
-  reserved_word_0: dw 0
-  ; Minix and ShoeLace sort partitions by start LBA (signed), but they explicitly put the ==0 value last.
-  ; So our partition will end up being /dev/hd4. So we put it to the correct spot.
-  partition_1:
-		times 4 dd 0  ; Hide it from Linux fdisk(1).
-  partition_2:  ; Ugly enough so that ShoeLace and Minix don't recognize it. Linux fdisk(1) prints it though.
-		times 4 dd 0  ; Hide it from Linux fdisk(1).
-  partition_3:  ; Ugly enough so that ShoeLace and Minix don't recognize it. Linux fdisk(1) prints it though.
-		times 4 dd 0  ; Hide it from Linux fdisk(1).
-  partition_4:  ; Partition 1. This is a fake partition which spans the entire HDD.
-  ;assert_at .header+0x1be
+%macro emit_full_partition 0
+  %00:
+  bootable_partition: equ $
   .status:	db 0x80  ; Bootable.
   .head:	db 0
   .sector:	db 1
@@ -694,6 +722,40 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
   .last_cylinder: db -1
   .lba_first:	dd 0
   .lba_count:	dd 0x7fffffff ; Minix can't use the partition if this value is negative.
+%endm
+
+%macro emit_empty_partition 0
+  times 4 dd 0  ; Hide it from Linux fdisk(1).
+%endm
+
+%macro emit_partition_table 0
+  times 0x1b8-($-_start) hlt
+  %if SHOELACE
+    disk_id_signature: db 'BotL'
+  %elif BOOT
+    disk_id_signature: db 'BotM'
+  %else
+    disk_id_signature: db 'MinX'
+  %endif
+  ;assert_at .header+0x1bc
+  reserved_word_0: dw 0
+  ;assert_at .header+0x1be
+  %if SHOELACE+MINIX
+    ; Minix 1.5 and ShoeLace sort partitions by start LBA (signed), but they explicitly put the ==0 value last.
+    ; So our partition will end up being /dev/hd4. So we put it to the correct spot.
+    partition_1: emit_empty_partition
+    partition_2: emit_empty_partition
+    partition_3: emit_empty_partition
+    partition_4: emit_full_partition  ; Minix 1.5 and ShoeLace will find it.
+  %elif BOOT
+    partition_1: emit_full_partition  ; initialize(...) in /usr/src/boot/boot.c will find the first one.
+    partition_2: emit_empty_partition
+    partition_3: emit_empty_partition
+    partition_4: emit_empty_partition
+  %else
+    %error ERROR_UNSUPPORTED_MODE_FOR_EMIT_PARTITION_TABLE
+    times -1 nop
+  %endif
   ;assert_at .header+0x1fe
   boot_signature: dw BOOT_SIGNATURE
   ;assert_at .header+0x200
@@ -749,7 +811,7 @@ _startload: equ $-1  ; unsigned char startload = 1;
 ; increase filesize here. We can ruin registers CX, DX, SI, DI and FLAGS. We
 ; must keep BP and BX (bufp) intact, and we must set AX to our desired
 ; hsize.
-%define CL_IS_ZERO 0
+%define CL_IS_ZERO 1
 %if SHOELACE
   ; For SHOELACE, we limit _filesize to min(_filesize, a_hdrlen + a_text +
   ; a_data), and skip the a.out executable header (of size a_hdrlen,
@@ -824,7 +886,10 @@ _startload: equ $-1  ; unsigned char startload = 1;
 .filesize_ok:
 		mov ax, 0x200  ; Set hsize to 0x200 to skip the bootblok at the beginning of the Minix kernel image.
 %endif
-
+%if BOOT
+  %define CL_IS_ZERO 1  ; Enable optimization below.
+  ; TODO(pts): Load only a_hdrlen + a_text + a_data bytes (no a_syms etc.). This optimization is not needed, because /boot typically doesn't contain symbols.
+%endif
 .hsize_and_filesize_ok:
 %if CL_IS_ZERO
 		mov ch, 0x400>>8  ; sizeof(buffer_t) == 0x400.
@@ -863,8 +928,18 @@ _bufptr_ofs: equ $-2
 		pop si  ; Restore.
 		ret
 
-%if SHOELACE
+%if SHOELACE+BOOT
   emit_partition_table
+%endif
+%if BOOT
+  boot_parameter_sector:  ; PARAMSEC == 1, i.e. this sector follows the boot sector. For us, it follows the MBR sector. /boot reads it in get_parameters() called from boot() in /usr/src/boot/boot.c.
+  db 'rootdev=bootdev', LF
+  %ifndef BOOTINET  ; Use `nasm -DBOOTINET' to enable networking.
+    db 'inet=none', LF
+  %endif
+  db 'boot', LF  ; Make it autoboot, withint entering the boot monitor `menu'.
+  times 0x40-(boot_parameter_sector-$) db LF  ; Leave room for manual edits. Unfortunately, the `save' command would destroy the rest of our code, overwriting it with LFs.
+  db NUL  ; onetoken(...) in /usr/src/boot stops at the first non-LF byte in the 0x00..0x1f.
 %endif
 
 ; /* Processes the next block of a directory by searching for an entry named
@@ -1043,6 +1118,7 @@ _loadandrunimage:
 		inc ax  ; BP := 1.
 		push ax  ; 1. Low word of SUPER_BLOCK. Argument 1 of _readblock below.
 		call _readblock
+		;  !! Add support for minix2 filesystem.
 		add sp, byte +0x6
 		mov cx, [si+0xa]  ; s_log_zone_size. Typically it's 0. 0 means: 1 zone == 1 block == 1 KiB. 5 means: 1 zone == (1<<5) blocks == 32 KiB.
 		mov ax, 1
@@ -1065,7 +1141,7 @@ _loadandrunimage:
 jump_to_image:
 %if SHOELACE
 		jmp IMAGE_SEG:0  ; Jump to _main(...) in /shoelace. The BPB segment (DS, with _nsectors) and the dummy offset value has already been pushed by the `call _loadandrunimage' above.
-%elif MINIX
+%elif MINIX+BOOT
 		ret  ; jmp near jump_to_minix  ; The actual code is in the MBR sector, because there is enough space there.
 %else
   %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_IMAGE
