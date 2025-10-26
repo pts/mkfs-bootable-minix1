@@ -201,15 +201,69 @@ After this setup, it will boot in QEMU. (See a working QEMU command line in
 the demo script [demo_minix_1.5_8086_qemu.sh](demo_minix_1.5_8086_qemu.sh).
 Tested on QEMU 2.11.1.)
 
-## More about Minix 1.5 kernels
+## Running Minix 1.5 in QEMU
 
-If you want to run Minix 1.5 8086 in 16-bit protected mode instead, using
-more than 640 KiB of memory, then download the kernel using
+The official [binary release of Minix 1.5 for i86](http://download.minix3.org/previous-versions/Intel-1.5/) (1995-05-30) comes with multiple kernels:
+
+* [pc/disk.01](http://download.minix3.org/previous-versions/Intel-1.5/pc/disk.01): can't use the virtual HDD in QEMU 2.11.1, so fails to boot when trying to find the root filesystem
+* [pc/disk.02](http://download.minix3.org/previous-versions/Intel-1.5/pc/disk.02): boots in QEMU 2.11.1 in 16-bit protected mode, can use multiple megabytes of memory
+* [pc/disk.03](http://download.minix3.org/previous-versions/Intel-1.5/pc/disk.03): boots in QEMU 2.11.1 in real mode, can use 638.5 KiB of memory (kernel and user programs in total)
+* [ps/disk.01](http://download.minix3.org/previous-versions/Intel-1.5/ps/disk.01): can't use the virtual HDD in QEMU 2.11.1, so fails to boot when trying to find the root filesystem; substantially different from the pc/disk.01 kernel image file
+* [ps/disk.02](http://download.minix3.org/previous-versions/Intel-1.5/ps/disk.02): same as the pc/disk.02 kernel image file, except for some padding bytes on the floppy image after the kernel
+* [ps/disk.03](http://download.minix3.org/previous-versions/Intel-1.5/ps/disk.03): same as the pc/disk.03 kernel image file, except for some padding bytes on the floppy image after the kernel
+
+The end-to-end demo script
+[demo_minix_1.5_8086_qemu.sh](demo_minix_1.5_8086_qemu.sh) downloads and
+boots the pc/disk.03 kernel, but you can change the file name in the script
+to pc/disk.02 (to get more than 638.5 KiB of memory), and it will work.
+
+Other boot options are much less reliable within QEMU (tested in QEMU
+2.11.1), because these kernels tend to break as soon as they (or the
+bootloader) try to access the floppy. If they break, they are not able to
+read anything from HDD either. The demo script makes sure that no attempt is
+made to access the floppy.
+
+There is a more recent compile of the pc/disk.02 kernel (still Minix 1.5 i86
+in 16-bit protected mode), using more than 640 KiB of memory. To try it,
+download the kernel using
 [download_minix_1.5_8086_qemu_pm.bin.sh](download_minix_1.5_8086_qemu_pm.bin.sh)
 (command: `./minix_1.5_8086_qemu_pm.bin.sh --rm`), and run the demo script
 as `./demo_minix_1.5_8086_qemu.sh minix_1.5_8086_qemu_pm.bin` instead. This
 kernel was modified and compiled by freebird or gohigh on 2003-01-04 (see
-[oldlinux.org](https://oldlinux.org/)).
+[oldlinux.org](https://oldlinux.org/)). It's unclear how this is different
+from the official kernels.
+
+The i86 releases of Minix have the following memory limits per process: code
+(text) size is up to 64 KiB, data (combined data, bss, heap and stack) is up
+to 64 KiB. To use more memory, you have to start multiple processes, and
+make them communicate. (The 16-bit Coherent releases had the same limits.
+16-bit Xenix releases had larger limits, a single process was able use all
+available memory up to 640 KiB.) The i386 releases of Minix supported
+several megabytes (mayge gigabytes, I haven't tested) of memory per process.
+
+The authors of Minix haven't made any official release of Minix 1.5 or 1.6
+for the i386 (x86 32-bit protected mode). Starting with version 1.7.0
+(1995-05-30), there were both i86 and i386 releases. However, many users
+from the Minix community have been working on unofficial ports to the i386,
+for example [Bruce Evans as early as
+1988-10-07](https://www.linux.co.cr/unix-source-code/review/1988/0315-a.html)).
+See usenet archive [page
+1](https://www.linux.co.cr/unix-source-code/review/1988/0315-a.html), [page
+2](https://www.linux.co.cr/unix-source-code/review/1990/0620.html) and
+[building from source
+tutorial](https://www.linux.co.cr/unix-source-code/review/1990/1107.html)
+for more details. Some of this work have been released as source patches.
+Since Minix wasn't free or open source software until 2000 (when it was
+relicensed, also retroactively under the 3-clause BSD license), it was not
+legal for community members to publish binary releases of their i386 ports.
+
+The significance of Minix 1.5 on the i386 is that Linus Torvalds used such a
+system on his computer to develop the very first versions of Linux in
+(approximately) 1991. See the [OldLinux](https://oldlinux.org/) web page for
+an archive of some of these early Linux sources and binaries, including the
+a disk image of the Minix 1.5 i386 system Linus used.
+
+## More about Minix 1.5 kernels
 
 A Minix 1.5 kernel image consists of the following components (in this
 order): bootblok, kernel, mm, fs, init, menu, db. After booting, only the
