@@ -1,6 +1,6 @@
 #! /bin/sh --
 #
-# demo_minix_1.5_8086_qemu.sh: create bootable disk image (quick mode) for Minix 1.5 8086, and start it in QEMU on Linux
+# demo_minix_1.5_8086_qemu_flexible.sh: create bootable disk image (flexible mode) for Minix 1.5 8086, and start it in QEMU on Linux
 # by pts@fazekas.hu at Wed Oct 22 03:23:28 CEST 2025
 #
 # The differene between quick mode and flexible mode is that in flexible
@@ -46,9 +46,9 @@ for f in disk.03 disk.04 disk.05; do
   fi
 done
 
-"$nasm" -O0 -w+orphan-labels -o minix_1.5_8086_hdd_boot.bin minix_1.5_8086_hdd_boot.nasm
+"$nasm" -O0 -w+orphan-labels -DMINIX -o mbr_bootminix.bin mbr_bootlace.nasm
 rm -f hd.img
-"$perl" -x mkfsbm1.pl --size="$(perl -e "print 61*63*16*512")" --fix-qemu --boot=minix_1.5_8086_hdd_boot.bin --kernel="$kernel" hd.img
+"$perl" -x mkfsbm1.pl --size="$(perl -e "print 61*63*16*512")" --fix-qemu --boot=mbr_bootminix.bin hd.img
 
 sudo umount p ||:
 sudo umount f ||:
@@ -61,6 +61,9 @@ sudo umount f
 sudo mount -t minix -o loop,ro disk.05 f
 sudo cp -a f/* p/usr/  # No fusr/.*
 sudo umount f
+sudo cp -a -- "$kernel" p/minix
+sudo chown 0.0 p/minix
+sudo chmod 644 p/minix
 sudo cp -a minix_1.5_8086_rc.hd p/etc/rc
 sudo chown 0.0 p/etc/rc
 sudo chmod 755 p/etc/rc

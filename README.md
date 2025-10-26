@@ -1,4 +1,4 @@
-# mkfs-bootable-minix1: tools to create bootable Minix 1 filesystems
+# mkfs-bootable-minix1: tools to create bootable Minix 1.x filesystems
 
 mkfs-bootable-minix1 is a set of command-line tools for Linux to create
 bootable Minix 1 filesystems. It contains the MBR boot code (as NASM
@@ -7,7 +7,29 @@ image file, an MBR image file file, and create a Minix 1 filesystem from
 them, which can be booted as a hard disk (HDD) image in emulators such as
 QEMU and VirtualBox.
 
-## The simple way to create a bootable Minix 1 filesystem
+The following boot modes are supported:
+
+* quick mode: Fastest kernel load during boot, but there is no convenient
+  way to replace the kernel while keeping the contents of the minix1
+  filesystem.
+  To try it on Linux in QEMU, run the end-to-end demo script
+  [demo_minix_1.5_8086_qemu.sh](demo_minix_1.5_8086_qemu.sh).
+* flexible mode: Still does fast enough boot, and you can replace the kernel
+  image any time by replacing the file */minix* on the minix1 filesystem.
+  To try it on Linux in QEMU, run the end-to-end demo script
+  [demo_minix_1.5_8086_qemu_flexible.sh](demo_minix_1.5_8086_qemu_flexible.sh).
+* ShoeLace mode: It uses the ShoeLace bootloader, which was commonly used
+  in the early 1990s to boot Minix 1.x. Shelace is quite slow compared to
+  the other methods, it takes about half a second in QEMU for ShoeLace to
+  start the Minix kernel. See more details below.
+
+mkfs-bootable-minix1 has been tested and it can boot Minix 1.5 8086
+(official release on
+[1990-06-01](http://download.minix3.org/previous-versions/Intel-1.5/)) and
+Minix 1.5 i386 (earliest unofficial community release on
+[https://www.linux.co.cr/unix-source-code/review/1990/0620.html)(1990-11-07)).
+
+## Details of quick mode
 
 An end-to-end demo script
 [demo_minix_1.5_8086_qemu.sh](demo_minix_1.5_8086_qemu.sh) is also included.
@@ -69,12 +91,39 @@ after the Minix filesystem. QEMU doesn't care, it accepts the default
 raw disk images. Having the Virtual PC .vhd footer doesn't break QEMU or the
 Linux kernel mounting the filesystem.
 
-## Creating a bootable Minix 1 filesystem using Shoelace
+## Details of flexible mode
 
-Shoelace is the bootloader which understand minix1 filesystem, load the
+Here is how booting from HDD works in flexible mode:
+
+1. As usual, the PC BIOS loads the Master Boot Record (MBR) from LBA sector
+   0, and starts running it in real mode at 0:0x7c00.
+2. The MBR contains the first sector of *bootminix*, a custom
+   bootloader developed as part of mkfs-bootable-minix1. (The NASM source
+   file is [mbr_bootlace.nasm](mbr_bootlace.nasm)), search for the string
+   MINIX* (all caps) there.) It loads the second sector (right after the
+   boot sector) of bootminix, and the resulting code loads the Minix kernel
+   image file named */minix* (typical size: 168 KiB for Minix 1.5 8086, and
+   497 KiB for Minix 1.5 i386; most of these are NUL bytes in BSS) on the
+   minix1 filesystem on that partition, and starts running it in real mode
+   at 0x60:0. The bootminix code is smart enough to understand and read a
+   minix1 filesystem (superblock, root inode, root directory, file inode,
+   file data). It can load a file even if it's fragmented.
+
+bootminix fits nicely in the minix1 filesystem without overlapping with
+important filesystem data structures. That's because the first block (1 KiB)
+of a minix1 filesystem is the boot block, and it can contain any data. In
+fact, the bootminix code is small enough (less than 0x360 bytes, including
+the 0x46 bytes of the parititon table) to fit into the boot block.
+
+bootminix can't boot from a filesystem on a floppy or on a partition on an
+HDD. If you need these features, use ShoeLace instead.
+
+## Details of ShoeLace mode
+
+ShoeLace is the bootloader which understand minix1 filesystem, load the
 kernel from any file on the filesystem (even if the file is fragmented), and
-boot it. Shoelace was released in 1989. The version tested here is from
-1990-04-24. Here is how booting from HDD typically works with Shoelace:
+boot it. ShoeLace was released in 1989. The version tested here is from
+1990-04-24. Here is how booting from HDD typically works with ShoeLace:
 
 1. As usual, the PC BIOS loads the Master Boot Record (MBR) from LBA sector
    0, and starts running it in real mode at 0:0x7c00.
@@ -84,23 +133,32 @@ boot it. Shoelace was released in 1989. The version tested here is from
    sector) of that tpartition, and starts running it in real mode at
    0:0x7c00.
 3. The boot sector contains the first sector of bootlace, one of the
-   components of the Shoelace boot manager. It loads the second sector
+   components of the ShoeLace bootloader. It loads the second sector
    (right after the boot sector) of bootlace, and the resulting code loads
    the file named */shoelace* (typical size: 47 KiB, including symbols) on
    the minix1 filesystem on that partition, and starts running it in real
    mode at 0x1000:0. The bootlace code is smart enough to understand and
    read a minix1 filesystem (superblock, root inode, root directory, file
    inode, file data). It can load a file even if it's fragmented.
-4. The /shoelace component of Shoelace loads its config file */etc/config* on
+4. The /shoelace component of ShoeLace loads its config file */etc/config* on
    the Minix1 filesystem, and loads and boots the kernel specified in the
    config file. Typically it is used (and it's more convenient to use it) to
    load Minix kernel component files (kernel, mm, fs and init) rather than
    the full kernel image file. The kernel component files are typically in
    the directory */etc/system*.
 
-Shoelace can also boot from floppy.
+bootlace fits nicely in the minix1 filesystem without overlapping with
+important filesystem data structures. That's because the first block (1 KiB)
+of a minix1 filesystem is the boot block, and it can contain any data. In
+fact, the bootlace code is small enough to fit into the boot block. bootlace
+was written in a combination of C and assembly. It's remarkable that a
+simple C compiler ([Bruce's C compiler
+(bcc)](https://gitlab.com/FreeDOS/devel/bcc)) in 1989 can produce such a
+compact code.
 
-Shoelace is not able to boot from a minix1 filesystem spanning over an
+ShoeLace can also boot from floppy.
+
+ShoeLace is not able to boot from a minix1 filesystem spanning over an
 entire HDD (e.g. */dev/hd0*), it works only with filesystems on a partition.
 However, by replacing the bootlace component with something else, the
 replacement can convince the /shoelace component to boot that way. In this
@@ -112,7 +170,7 @@ case, the boot process will work like this:
    (i.e. starts at LBA sector 0, CHS sector 0:0:1).
 2. The first sector of the replacement bootlace loads the second sector.
 3. The replacement bootlace code loads the the file named
-   */sheolace*, which is an unmodified /shoelace component of Shoelace.
+   */sheolace*, which is an unmodified /shoelace component of ShoeLace.
 4. /shoelace thinks that the minix1 filesystem is on parititon 4, finds its
    */etc/config* file there, and boots the Minix kernel with /dev/hd4 as the
    root filesystem.
@@ -155,10 +213,10 @@ kernel was modified and compiled by freebird or gohigh on 2003-01-04 (see
 
 A Minix 1.5 kernel image consists of the following components (in this
 order): bootblok, kernel, mm, fs, init, menu, db. After booting, only the
-kernel, mm, fs and init components remain in memory. The Shoelace boot
-manager, in addition to booting a kernel image file, is able to boot a Minix
-kernel using the 4 in-memory component files (kernel, mm, fs and init). To
-facilitate this, mkfs-bootable-minix1 provides the Perl script
+kernel, mm, fs and init components remain in memory. The ShoeLace
+bootloader, in addition to booting a kernel image file, is able to boot a
+Minix kernel using the 4 in-memory component files (kernel, mm, fs and
+init). To facilitate this, mkfs-bootable-minix1 provides the Perl script
 [split_minix_kernel.pl](split_minix_kernel.pl), which splits a Minix 1.5
 kernel image to its 4 in-memory component files. It's also possible to save
 disk space by splitting, because the NUL bytes of BSS sections are included
