@@ -75,22 +75,33 @@ die("Usage: $0 -- <image> <kernel> [<mm> <fs> <init>]\n") unless (@ARGV == 3 or 
 my($dummy, $image_fn, $kernel_fn, $mm_fn, $fs_fn, $init_fn) = @ARGV;
 
 my $image_data = read_file($image_fn);
-die("fatal: unrecognized Minix kernel image: $image_fn\n") if
-    length($image_data) < 0x400 or
-    $image_data !~ m@^\xb8\xc0\x07 \x8e\xd8 \x31\xf6 \xb8.. \x8e\xc0  \x31\xff \xb9\x00\x01 [\xf2\xf3]\xa5 \xea@sx;  # Minix 1.5 8086 kernel image with floppy boot sector. Example files: pc/disk.03, demo_dsk.ibm .
-# db is the debugger. It is not used in practice, and values are 0 in production images.
-my($db_ds, $db_pc, $db_cs, $final, $menu_ds, $menu_pc, $menu_cs) = unpack("v7", substr($image_data, ((substr($image_data, 0x1fe, 2) eq "\x55\xaa") ? 0x1f0 : 0x1f2), 7 << 1));
-my $final_cs = (($final - 1) << 5) + 0x60;
-my $menu_fofs = 0x200 + (($menu_cs - 0x60) << 4);
-my $db_fofs = 0x200 + (($db_cs - 0x60) << 4);
-printf(STDERR "info: Minix kernel boot final=0x%x final_cs=0x%x menu_ds=0x%x menu_pc=0x%x menu_cs=0x%x menu_fofs=0x%x db_ds=0x%x db_pc=0x%x db_cs=0x%x db_fofs=0x%x f=%s\n", $final, $final_cs, $menu_ds, $menu_pc, $menu_cs, $menu_fofs, $db_ds, $db_pc, $db_cs, $db_fofs, $image_fn);
-die("fatal: bad final: $image_fn\n") if $final < 2;
-die("fatal: bad menu_pc: $image_fn\n") if $menu_pc;
-die("fatal: bad menu_cs: $image_fn\n") if $menu_cs < 0x80;  # This is way too low.
-die("fatal: inconsistent menu_cs and menu_ds: $image_fn\n") if $menu_ds < $menu_cs;  # Minix 1.5 8086 has these equal, but in Minix 1.5 i386, $menu_ds is 0x100 larger.
-die("fatal: menu_cs is larger than kernel_cs: $image_fn\n") if $menu_cs > $final_cs;
-die("fatal: Minix kernel image too short: $image_fn\n") if length($image_data) < 0x200 + (($final_cs - 0x60) << 4);
-$image_data = substr($image_data, 0x200, $menu_fofs - 0x200);
+if (length($image_data) >= 0x400 and
+    $image_data =~ m@^\xb8\xc0\x07 \x8e\xd8 \x31\xf6 \xb8.. \x8e\xc0  \x31\xff \xb9\x00\x01 [\xf2\xf3]\xa5 \xea@sx) {  # Minix 1.5 8086 kernel image with floppy boot sector (bootblok). Example files: pc/disk.03, demo_dsk.ibm .
+  # db is the debugger. It is not used in practice, and values are 0 in production images.
+  my($db_ds, $db_pc, $db_cs, $final, $menu_ds, $menu_pc, $menu_cs) = unpack("v7", substr($image_data, ((substr($image_data, 0x1fe, 2) eq "\x55\xaa") ? 0x1f0 : 0x1f2), 7 << 1));
+  my $final_cs = (($final - 1) << 5) + 0x60;
+  my $menu_fofs = 0x200 + (($menu_cs - 0x60) << 4);
+  my $db_fofs = 0x200 + (($db_cs - 0x60) << 4);
+  printf(STDERR "info: Minix kernel boot final=0x%x final_cs=0x%x menu_ds=0x%x menu_pc=0x%x menu_cs=0x%x menu_fofs=0x%x db_ds=0x%x db_pc=0x%x db_cs=0x%x db_fofs=0x%x f=%s\n", $final, $final_cs, $menu_ds, $menu_pc, $menu_cs, $menu_fofs, $db_ds, $db_pc, $db_cs, $db_fofs, $image_fn);
+  die("fatal: bad final: $image_fn\n") if $final < 2;
+  die("fatal: bad menu_pc: $image_fn\n") if $menu_pc;
+  die("fatal: bad menu_cs: $image_fn\n") if $menu_cs < 0x80;  # This is way too low.
+  die("fatal: inconsistent menu_cs and menu_ds: $image_fn\n") if $menu_ds < $menu_cs;  # Minix 1.5 8086 has these equal, but in Minix 1.5 i386, $menu_ds is 0x100 larger.
+  die("fatal: menu_cs is larger than kernel_cs: $image_fn\n") if $menu_cs > $final_cs;
+  die("fatal: Minix kernel image too short: $image_fn\n") if length($image_data) < 0x200 + (($final_cs - 0x60) << 4);
+  $image_data = substr($image_data, 0x200, $menu_fofs - 0x200);
+} elsif ($image_data =~ s@^\x01\x03\x20([\x04\x10])\x20\0\0\0(....)(?:.{20}) (?=\xeb\x04 \x08\0 \0\0 \xfa \xfc \x2e\x8b\x16\x04\x00 \x8e\xda \x8e\xc2 \x8e\xd2 \xbc)@@sx) {  # Just the kernel component.
+  my $a_cpu = ord($1); my $a_text = unpack("V", $2);
+  my $cpu = ($a_cpu eq 0x10) ? "i386" : "8086";
+  printf(STDERR "info: Minix kernel component file cpu=%s a_text=0x%x f=%s\n", $cpu, $a_text, $image_fn);
+  die("fatal: a_text is not a multiple of 0x10: $image_fn\n") if $a_text & 0xf;
+  my $fake_kernel_ds = 0x60 + ($a_text >> 4);
+  die("fatal: fake kernel_ds too large: $image_fn\n") if $fake_kernel_ds > 0xffff;
+  substr($image_data, 4, 2) = pack("v", $fake_kernel_ds);
+  # It gets a only a little bit further from here.
+} else {
+  die("fatal: unrecognized Minix kernel image: $image_fn\n");
+}
 die("fatal: unrecognized Minix kernel image before menu: $image_fn\n") if
     $image_data !~ m@^\xeb\x04 .. (..) \xfa \xfc \x2e\x8b\x16\x04\x00 \x8e\xda \x8e\xc2 \x8e\xd2 \xbc@sx;
 my $kernel_cs = 0x60; my $kernel_ds = unpack("v", $1);
