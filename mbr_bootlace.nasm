@@ -2,7 +2,8 @@
 ; mbr_bootlace.nasm: Minix 1.5 bootlace boot code that can be put to a HDD MBR
 ; MBR-specific code and size optimizations by pts@fazekas.hu at Fri Oct 24 19:14:53 CEST 2025
 ;
-; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -o mbr_bootlace.bin mbr_bootlace.nasm
+; Compile for /shoelace with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -o mbr_bootlace.bin mbr_bootlace.nasm
+; Compile for /minix    with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMINIX -o mbr_bootminix.bin mbr_bootlace.nasm
 ;
 ; Based on the following Minix 1.5 source files:
 ;
@@ -13,11 +14,29 @@
 ;
 ; This boot code can boot Minix 1.5 (both 8086 and i386) from a HDD which
 ; doesn't have partitions, but the minix1 filesystem is created to span over
-; the entire HDD (i.e. /dev/hd0). Here is how you should prepare such a
-; bootable filesystem image:
+; the entire HDD (i.e. /dev/hd0).
+;
+; Here is how you should prepare such a bootable filesystem image for
+; mbr_minix.bin:
 ;
 ; 1. Create the Minix filesystem.
-; 2. Copy the file named shoelace of the Shoelace boot manager to the root
+; 2. Copy your minix kernel image file (typically larger than 128 KiB) as
+;    /minix, to the root directory of the fileystem.
+; 3. Unmount the filesystem.
+; 4. Copy the binary version of this code (mbr_bootminix.bin) to the first two
+;    sectors of the HDD. On a Linux host, if the Minix filesystem image
+;    filename is *hd.img*, you can do this by running `dd if=mbr_bootlace.bin
+;    of=hd.img count=2 conv=notrunc`.
+; 5. There is not need to create a partition table. *mbr_bootminix.bin*
+;    already has one. The Minix root partition will be /dev/hd4 (or dev/hd4,
+;    /if booting from the 2nd HDD). (It also works as /dev/hd0.)
+;    There is no need to configure this, it will be autodetected on boot.
+;
+; Here is how you should prepare such a bootable filesystem image for
+; mbe_bootlace.bin:
+;
+; 1. Create the Minix filesystem.
+; 2. Copy the file named shoelace of the ShoeLace bootloader to the root
 ;    directory of the fileystem.
 ; 3. If you have a Minix kernel image, then extract the 4 component files
 ;    kernel, mm, fs, and init using
@@ -84,6 +103,61 @@
 ;      disk. It is important that this vector be changed if other
 ;      code is subsequently loaded on the BootLace corpse.
 ;
+
+; --- Compile-time configuration (`nasm -D...').
+
+%ifdef MINIX
+  %define MINIX 1
+%else
+  %define MINIX 0
+%endif
+%ifdef SHOELACE
+  %define SHOELACE 1
+%endif
+%ifdef BOOTLACE
+  %define SHOELACE 1
+  %undef BOOTLACE
+%endif
+%ifndef SHOELACE
+  %define SHOELACE 0
+%endif
+%if MINIX+SHOELACE==0
+  %define SHOELACE 1  ; Default.
+%endif
+%if MINIX+SHOELACE>1
+  %error ERRROR_MULTIPLE_BOOT_METHODS_SELECTED
+  times -1 nop
+%endif
+
+; ---
+
+bits 16
+cpu 8086
+
+; Minix 1.5 device numbers.
+DEV_FD0 equ 0x200  ; GRUB (fd0): First floppy.
+DEV_HD0 equ 0x300  ; GRUB (hd0): Start of first hard disk.
+DEV_HD1 equ 0x301  ; GRUB (hd0,1): First hard disk, partition 1.
+DEV_HD2 equ 0x302  ; GRUB (hd0,2): First hard disk, partition 2.
+DEV_HD3 equ 0x303  ; GRUB (hd0,3): First hard disk, partition 3.
+DEV_HD4 equ 0x304  ; GRUB (hd0,4): First hard disk, partition 4.
+DEV_HD5 equ 0x305  ; GRUB (hd1): Start of second hard disk.
+DEV_HD6 equ 0x306  ; GRUB (hd1,1): Second hard disk, partition 1.
+DEV_HD7 equ 0x307  ; GRUB (hd1,2): Second hard disk, partition 2.
+DEV_HD8 equ 0x308  ; GRUB (hd1,3): Second hard disk, partition 3.
+DEV_HD9 equ 0x309  ; GRUB (hd1,4): Second hard disk, partition 4.
+DEV_RAM equ 0x100  ; Ramdisk.
+
+SECTOR_SIZE equ 0x200  ; Byte size of a disk sector.
+
+BOOT_SIGNATURE equ 0xaa55  ; dw.
+
+SCANCODE equ 13  ; Scancode of '=' on the IBM PC keyboard.
+
+CR  equ 13  ; ASCII CR '\r'.
+LF  equ 10  ; ASCII LF '\n'.
+NUL equ 0   ; ASCII NUL '\0'.
+
 ; In /usr/oz/shoelace/bootlace.x
 
 ;               MINIX TurboC Mini-Bootstrap Code
@@ -111,18 +185,6 @@
 ; 16-Apr-1988   Modelled on minix boot code
 ;
 
-bits 16
-cpu 8086
-
-VECTORSEG      equ 0           ; vector segment
-LOADSEG        equ 0x7c0       ; here the boot block itself is loaded
-BOOTSEG        equ 0x1000      ; here it will copy itself (64k-127k)
-SECTORSIZE     equ 512         ; size of disk sector
-BOOTSIZE       equ SECTORSIZE  ; size of boot code
-FDTABLEVECTOR  equ 0x1e        ; vector to floppy parameters
-
-BOOT_SIGNATURE equ 0xaa55  ; dw.
-
 ; Program entry point
 ;
 ; When the PC is powered on, it reads the first 0x200 bytes from the
@@ -131,20 +193,20 @@ BOOT_SIGNATURE equ 0xaa55  ; dw.
 ;
 ; On entry the following register contents are assumed:
 ;
-;       dl      BIOS drive number (80h hard disk, 00h floppy disk, etc.)
+; * DL: BIOS drive number (80h hard disk, 00h floppy disk, etc.)
 _start:
 _main:
-; The drive number is still in dl. es:si points at
-; partition table entry if hard disk boot.
+%if SHOELACE
+  LOADSEG   equ  0x7c0  ; here the boot block itself is loaded
+  IMAGE_SEG equ 0x1000  ; Load the /shoelace image here (at IMAGE_SEG:0).
+  ; The drive number is still in dl. es:si points at
+  ; partition table entry if hard disk boot.
 		mov ax, LOADSEG  ; current code segment
 		mov ds, ax  ; data addressable
 		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
 		mov ss, ax  ; stack addressable
 		mov sp, -LOADSEG<<4
 		sti
-; Find out the parameters of the hard disk if this is a hard disk
-; boot. The only way to find out the number of heads and the number
-; of sectors per track is to ask.
 		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
 		mov [byte di+_diskcode], dl  ; code for boot disk
 		test dl, dl
@@ -155,18 +217,54 @@ _main:
 		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
 		jmp short cont_main
 		times 0x1c-($-_start) hlt  ; shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
-_diskcode: equ _start+2  ; db .bios_boot_drive_number. shoemain(...) in /shoelace expects _diskcode to be at _start+2.
-_n_sectors: equ _start+0x18  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8. shoemain(...) in /shoelace expects _n_sectors to be at _start+0x18.
-_n_heads: equ _start+0x1a  ; dw .head_count value. It will be autodected with int 13h AH==8. shoemain(...) in /shoelace expects _n_heads to be at _start+0x1a.
-_hidden:	dd 0  ; dd .hidden_sector_count value. LBA sector offset of the start of the partition. Also called the number of hidden sectors. shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
-%if _hidden!=_start+0x1c
-  %error ERROR_BAD_LOCATION_FOR_HIDDEN
-  times -1 nop
+  _n_sectors: equ _start+0x18  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8. shoemain(...) in /shoelace expects _n_sectors to be at _start+0x18.
+  _n_heads: equ _start+0x1a  ; dw .head_count value. It will be autodected with int 13h AH==8. shoemain(...) in /shoelace expects _n_heads to be at _start+0x1a.
 %endif
+%if MINIX
+  IMAGE_SEG equ 0x60  ; Load the /minix image here (at IMAGE_SEG:0).
+  ; Leave ((0x9000-0x60)<<4)/1024 == 574.5 KiB for the Minix kernel. Typical
+  ; Minix 1.5 8086 kernels images are <154 KiB. Typical Minix 1.5 i386
+  ; kernel images are <497 KiB (most of these are BSS NUL bytes).
+  BOOT_COPY_SEG equ 0x9000
+		xor di, di
+		mov ds, di
+		mov si, 0x7c00  ; The BIOS has loaded a sector starting at _start from the MBR here.
+		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
+		mov sp, [byte si+.boot_copy_seg-_start] ; BOOT_COPY_SEG is also good for SP: 0x9000 bytes of total size (code + data + BSS + stack) is enough for this bootloader.
+		mov ss, sp
+		sti
+		mov es, sp
+		cld
+		mov cx, SECTOR_SIZE>>1
+		rep movsw  ; Copy the MBR code from 0:0x7c00 to BOOT_COPY_SEG:0. After the copy, set CS := DS := SS := BOOT_COPY_SEG. ES floats (i.e. it's arbitrary).
+		mov ds, sp
+		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
+		mov [byte di+_diskcode], dl  ; code for boot disk
+		test dl, dl
+		jns short fatal_lost  ; On floppy.
+		mov es, di  ; Workaround for buggy BIOS.
+		push dx  ; The AH==8 call below overwrites DL.
+		; The BIOS may jump to 0:0x7c00, 0x7c0:0 or any combination. We don't care for CS, because we use only relative jumps. We've already set DS := LOADSEG == 0x7c0.
+		mov ah, 8  ; Read drive parameters. Modifies CF, AH, DL, DH, CX, BL, ES, DI.
+		jmp BOOT_COPY_SEG:cont_main-_start
+  .boot_copy_seg: equ $-2
+  _n_sectors: equ _start+0  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8.
+  _n_heads: equ _start+8  ; dw .head_count value. It will be autodected with int 13h AH==8.
+%endif
+%if MINIX==0  ; Not needed when booting /minix, the value is always 0.
+  _hidden: dd 0  ; dd .hidden_sector_count value. LBA sector offset of the start of the partition. Must be initialized to 0. shoemain(...) in /shoelace expects _hidden to be at _start+0x1c.
+  %if SHOELACE && _hidden!=_start+0x1c
+    %error ERROR_BAD_LOCATION_FOR_HIDDEN
+    times -1 nop
+  %endif
+%endif
+_diskcode: equ _start+2  ; db .bios_boot_drive_number. shoemain(...) in /shoelace expects _diskcode to be at _start+2.
+_filesize: equ _start+4  ; dd. long filesize; size of image file or directory. 4 bytes. Alternatively, this could also be in the BSS, but we have it here for fun.
+
 fatal_lost:
-		mov byte [_noshoename+4], 0  ; Just display 'Lost'.
+		mov byte [_noimgname+4], 0  ; Just display 'Lost'.
 fatal_lost_file:
-		mov si, _noshoename
+		mov si, _noimgname
 fatal_si:
 .nextchar:
 		lodsb
@@ -184,7 +282,12 @@ fatal_si:
 ; !! Can we fix floppy support in QEMU 2.11.1 running Minix 1.5 by populating dskbase (11 bytes at _start+0x20) with the correct DPT (https://fd.lod.bz/rbil/interrup/bios/1e.html#2483)?
 ;    shoemain(...) in /shoelace does memcpy(dskbase, &bpb[B_FPT_P], sizeof(dskbase));
 cont_main:
+; Find out the parameters of the hard disk if this is a hard disk
+; boot. The only way to find out the number of heads and the number
+; of sectors per track is to ask.
+%if SHOELACE  ; Others have done it already.
 		cld  ; direction is up
+%endif
 		int 0x13  ; BIOS disk syscall. This call changes ES and DI only if DL is a floppy drive.
 		jc short fatal_lost
 
@@ -209,16 +312,48 @@ cont_main:
 ; at the end of the boot sector. Assume that the boot block writer
 ; has shuffled space in the code to effect this. To recover the executable
 ; it is necessary to read over this signature.
-readshoehorn:
 		push ds  ; read next block into this segment
 		pop es
-		mov bx, BOOTSIZE  ; above boot sector
+.retry_sector_1_read:
+		mov bx, SECTOR_SIZE  ; above boot sector
 		mov dh, 0  ; head == 0.
 		mov cx, 2  ; cylinder == 0, sector == 2 (i.e. the sector following the MBR).
 		mov ax, 0x201  ; read one sector
 		int 0x13
-		jc short fatal_lost
-		jmp near _shoehorn  ; shoe horn the code in
+		jc short fatal_lost  ; This read is not retried. To retry, we could jump back to .retry_sector_1_read.
+%if SHOELACE
+		push ds  ; Segment used by _main(...) in /shoelace for getting e.g. _diskcode (see above).
+		;push ax  ; Dummy value, popped by _main(...) in /shoelace. We don't push it, because the `call' below pushes a value.
+		call _loadandrunimage
+%elif MINIX
+		call _loadandrunimage
+		; Fall through to jump_to_minix.
+%else
+  %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_LOAD
+  times -1 nop
+%endif
+
+%if MINIX
+  jump_to_minix:
+		mov ax, 0xffff
+		push ax  ; Minix boot_parameters.bp_processor. 88 would force 386 to 88. Default processor type for no restriction is 0xffff.
+		mov bx, SCANCODE  ; Minix boot_parameters.bp_scancode. Scancode of '=' on the IBM PC keyboard. The Minix kernel expects it both boot_parameters and BX.
+		push bx
+		inc ax
+		push ax  ; Minix boot_parameters.bp_ramsize. Ramdisk size. The value doesn't matter, because we are not booting from DEV_RAM (ramdisk).
+		push ax  ; Minix boot_parameters.bp_ramimagedev. The value doesn't matter, because we are not booting from DEV_RAM (ramdisk).
+		mov dx, DEV_HD8
+		cmp byte [_diskcode], 0x81  ; Are we booting from the 2nd HDD?
+		je short .hdd_done
+		mov dl, DEV_HD4&0xff
+  .hdd_done:
+		push dx  ; Minix Minix boot_parameters.bp_rootdev. Root filesystem device. DX is ignored by the Minix kernel entry point.
+		; xor ax, ax  ; Indicates that DS:SI points to boot_parameters. AX is already 0.
+		mov cx, 0xa  ; Byte size of boot_parameters.
+		mov di, ss  ; Segment of boot_parameters.
+		mov si, sp  ; Offset  of boot_parameters.
+		jmp IMAGE_SEG:0  ; Jump to the entry point of the kernel component of the Minix kernel image: MINIX in /usr/src/kernel/start.x.
+%endif
 
 ; The boot code will use the tiny model in which code and data occupy
 ; the same 64kb segment. Because of the space constraints, the data
@@ -230,9 +365,14 @@ readshoehorn:
 ; For this reason, all data required by the INITIAL boot block is placed
 ; here (within the code segment).
 
-_noshoename:	db 'Lost /'
-_lacename:	db 'shoelace'
-_endshoename:	db 0, 0xa, 0
+_noimgname:	db 'Lost '
+%if SHOELACE
+  _imgname1:	db '/shoelace'
+%endif
+%if MINIX
+  _imgname1:	db '/minix'
+%endif
+_endimgname:	db NUL, LF, NUL
 
 ; Read a minix block from the disk
 ;
@@ -258,8 +398,10 @@ _readblock:
 		mov dx, [bp+0x6]
 		shl ax, 1  ; left shift to make sector
 		rcl dx, 1
+%if 0  ; We don't need to add this, because the MBR always starts at LBA sector offset 0, thus _hidden == 0.
 		add ax, [_hidden]  ; combine hidden sectors
 		adc dx, [_hidden+2]
+%endif
 		xor si, si  ; no offset yet
 		mov bh, [_n_sectors]  ; possible overlap
 		jmp short readdosector
@@ -278,7 +420,7 @@ readdosector:
 		div word [_n_sectors]  ; extract sector number;  TODO(pts): Add shorter code for the gemotry calculation.
 		mov cl, dl  ; save sector number
 		inc cl  ; sectors count from 1
-		mov di, SECTORSIZE  ; read size
+		mov di, SECTOR_SIZE  ; read size
 		mov bl, 0x1  ; read one sector
 		cmp cl, bh  ; check for track overlap
 		jnc short readoverlap  ; overlaps are read slowly
@@ -317,7 +459,7 @@ readblockerror:
 
 readok:
 		add si, di  ; increase offset
-		cmp si, 2*SECTORSIZE  ; 2 sectors per block
+		cmp si, 2*SECTOR_SIZE  ; 2 sectors per block
 		jc short readnextsector
 		; jmp short dsret  ; Fall through to dsret.
 
@@ -369,53 +511,101 @@ _checkfilesize:
 
 ; Code in /usr/oz/shoelace/shoeasm.x ends here.
 
+; The original bootlace source is a mixture of 8086 assembly and C. The C
+; code snippets below are based on that code, but both the C code snippets
+; and the assembly counterparts have been modified for both clarity (with extra comments). and
+; functionality. They still correspond to each other.
+
+; typedef struct buffer_t { unsigned char buf[0x400]; } buffer_t;
+; typedef unsigned short inode_nr;
+; typedef unsigned short zone_nr;
+; typedef inode_nr (*INODEFN)(buffer_t *bufp);
+; #define NR_ZONE_NUMS 9  /* # zone numbers in an inode */
+; #define SUPER_BLOCK 1
+; #define ROOT_INODE 1
+; struct super_block {  /* At start of block SUPER_BLOCK. */
+;   ino_t s_ninodes;              /* # usable inodes on the minor device */
+;   zone_nr s_nzones;             /* total device size, including bit maps etc */
+;   unshort s_imap_blocks;        /* # of blocks used by inode bit map */
+;   unshort s_zmap_blocks;        /* # of blocks used by zone bit map */
+;   zone_nr s_firstdatazone;      /* number of first data zone */
+;   short int s_log_zone_size;    /* log2 of blocks/zone */
+;   off_t s_max_size;             /* maximum file size on this device */
+;   short s_magic;                /* magic number to recognize super-blocks */
+; };
+; typedef struct {  /* inode, as stored on disk. 0x20 bytes. */
+;   unsigned short i_mode;                /* file type, protection, etc. */
+;   unsigned short i_uid;                 /* user id of the file's owner */
+;   unsigned long  i_size;                /* current file size in bytes */
+;   unsigned long  i_mtime;               /* when was file data last changed */
+;   unsigned char  i_gid;                 /* group number */
+;   unsigned char  i_nlinks;              /* how many links to this file */
+;   zone_nr        i_zone[NR_ZONE_NUMS];  /* block nums for direct, ind, and dbl ind */
+; } d_inode;
+; typedef struct {  /* Directory entry, as stored on disk. 0x10 bytes. */
+;   ino_t d_inum;                 /* inode number */
+;   char d_name[NAME_MAX];        /* character string */
+; } dir_struct;
+; extern const char imgname[];
+; extern long filesize;
+
 ; In /usr/oz/shoelace/shoebfs.c
+;
 ; The intention of this code is to provide a root directory scanner
 ; and file reader for the boot code in as small a space as possible.
 ; This forms a basic file system scanner.
-
-; /*
-;  * Scan a zone
+;
+; /* Scans the specified zones taking note of the level of indirection,
+;  * calling the function `fn' for each block (1 KiB) in the zone.
 ;  *
-;  * Scan the specified zones taking note of the level of indirection.
-;  * Indirection is taken care of by recursion. Processing of zero
-;  * level zones is done by calling the service routine. If the
-;  * routine returns 0, processing continues. Any other value causes
-;  * processing to be aborted.
+;  * Indirection is taken care of by recursion. Processing of bottom-level
+;  * zones is done by calling the service routine by function pointer `fn'.
+;  * Stops at the first nonzero return value of `fn' (and propagates it), or
+;  * returns 0 at the end of the zone.
 ;  *
-;  * Assume that n > 0. The outer loop will execute a silly number
+;  * Assumes that n > 0. The outer loop will execute a silly number
 ;  * of times if this is not true.
 ;  */
-; inode_nr scanzone F4(zone_nr *, zp, int, level, int, n, INODEFN, fn) {
-;   long b;				/* current block */
-;   int i;				/* index */
-;   inode_nr v;				/* return value from function */
-;   buffer tb;				/* zone reading buffer */
+; inode_nr scanzone(zone_nr *zp, int level, int n, INODEFN fn) {
+;   long b;                             /* current block */
+;   int i;                              /* index */
+;   inode_nr v;                         /* return value from function */
+;   buffer_t tb;                        /* zone reading buffer */
 ;   do {
 ;     b = zoneblock(*zp++);
 ;     i = zsize;
 ;     do {
-;       readblock(b++, (buffer *) &tb[0]);
-;       if ((v = level ? scanzone((zone_nr *) tb, level-1,
-; 				sizeof(tb)/sizeof(zone_nr), fn)
-; 		     : (*fn)(tb)) != 0)
-; 	goto DoneScan;
+;       readblock(b++, (buffer_t*)&tb[0]);
+;       if ((v = level ? scanzone((zone_nr*)tb, level - 1,
+;                                 sizeof(tb)/sizeof(zone_nr), fn)
+;                      : (*fn)(tb)) != 0) {
+;         return v;
+;       }
 ;     } while (--i);
 ;   } while (--n);
-; DoneScan:
-;   return v;
+;   return 0;
 ; }
+;
+; This _scanzone implementation receives its argument zp in register BX.
+;
+; This _scancode implementation doesn't receive or pass on its argument fn.
+; It is passed via self-modifying code in the body of
+; _procdir_or_procimagefile.
+;
+; This _scanzone implementation preserves the value of BX.
 _scanzone:
 		push bp
 		mov bp, sp
-		sub sp, 0x408  ; word [bp-0x8], word [bp-0x2], word [bp-0x4] are unused. Large (>1 KiB) stack usage because of the tp buffer of size 0x400 bytes.
-		push si
-		push di
+		sub sp, 0x400  ; Large (>1 KiB) stack usage because of the tp buffer of size 0x400 bytes. Also, the function is recursive.
+		push si  ; Save.
+		push di  ; Save.
+		push bx  ; Save.
 .1:
-		mov bx, [bp+0x4]
-		add word [bp+0x4], byte +0x2
-		;push word [bx]
+		mov ax, [bx]  ; AX := zone number.
+		times 2 inc bx  ; BX (zp) += sizeof(zone_nr) (== 2).
+		push bx  ; Save BX (zp).
 
+		;push word [bx]
 		; call _zoneblock  ; We inline it.
 ; Convert zone to block
 ;
@@ -430,107 +620,223 @@ _scanzone:
 ; The function assumes that the scaling factor is to be found in
 ; the global _zsize.
 ;_zoneblock:
-		mov ax, [bx]  ; AX := zone number.
 		mov cx, 0  ; Self-modifying code: the constant here will be modified.
 _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
-		mul cx  ; convert to blocks
+		mul cx  ; DX:AX := zoneblock(zp).
 
 		mov si, ax
 		mov di, dx
-		mov [bp-0x6], cx
 .2:
+		push cx  ; Save CX (i).
 		;mov ax, sp  ; This would work only without `push si' and `push di' above. With them, reorganizing it doesn't bring any savings.
-		lea ax, [bp-0x408]  ; tb.
+		lea ax, [bp-0x400]  ; tb.
 		push ax  ; Save tb pointer value.
 		push ax
 		push di
 		push si
-		add si, byte +0x1
-		adc di, byte +0x0
+		add si, byte 1
+		adc di, byte 0
 		call _readblock
 		add sp, byte +0x6
 		pop bx  ; Restore BX := tb pointer value.
-		cmp word [bp+0x6], byte +0x0
-		jz short .3
-		push bx  ; Save BX (tb). The `call _scanzone' below ruins it.
-		mov ax, [bp+0x6]
-		dec ax
-		push word [bp+0xa]
+		mov ax, [bp+0x6-2]
+		sub ax, strict word 1
+		jc short .3
+		;push bx  ; No need to save BX (tb), the `call _scanzone' below is special, and doesn't ruin it.
 		mov cx, 0x200  ; sizeof(tb) / sizeof(zone_nr).
+		;push fn_arg  ; Not received, not passed on.
 		push cx
 		push ax
-		push bx
+		;push bx  ; Pass argument zp of _scanzone below in BX.
 		call _scanzone
-		add sp, byte +0x8
-		pop bx  ; Restore BX (tb).
+		times 2 pop cx  ; Clean up 2 arguments of _scanzone above from the stack.
+		;pop bx  ; No need to restore BX (tb).
 .3:
-		; mov bx, bx  ; The argument `tb' of _dirscan_or_readshoe is passed in register BX.
-		cmp [bp+0xa], byte 0  ; _dirscan_or_readshoe will use the resulting FLAGS.
-		call _dirscan_or_readshoe  ; (*fn)(tb). Instead of a function pointer, we use 0 for _dirscan and nonzero for _readshoe.
+		;mov bx, bx  ; The argument `tb' of _procdir_or_procimagefile is passed in register BX.
+		call _procdir_or_procimagefile  ; (*fn)(tb). The argument `fn' of _procdir_or_procimagefile is passed implicitly via self-modifying code in the body of _procdir_or_procimagefile.
+		pop cx  ; Restore CX (i).
 		test ax, ax
 		jnz short .6
-		dec word [bp-0x6]
-		jnz short .2
-		dec word [bp+0x8]
+		loop .2  ; CX -= 1. Jump iff the new CX is 0.
+		pop bx  ; Restore BX (zp).
+		dec word [bp+0x8-2]
 		jnz short .1
 .6:
-.j_dsret:
+		pop bx  ; Restore for the caller.
 		jmp strict short dsret
 
-		;times 0x1b8-35-($-_start) hlt  ; Move di_is_small_enough as late as possible, for the short jumps below.
+%macro emit_partition_table 0
+		times 0x1b8-($-_start) hlt
+  %if SHOELACE
+    disk_id_signature: db 'BotL'
+  %else
+    disk_id_signature: db 'MinX'
+  %endif
+  ;assert_at .header+0x1bc
+  reserved_word_0: dw 0
+  ; Minix and ShoeLace sort partitions by start LBA (signed), but they explicitly put the ==0 value last.
+  ; So our partition will end up being /dev/hd4. So we put it to the correct spot.
+  partition_1:
+		times 4 dd 0  ; Hide it from Linux fdisk(1).
+  partition_2:  ; Ugly enough so that ShoeLace and Minix don't recognize it. Linux fdisk(1) prints it though.
+		times 4 dd 0  ; Hide it from Linux fdisk(1).
+  partition_3:  ; Ugly enough so that ShoeLace and Minix don't recognize it. Linux fdisk(1) prints it though.
+		times 4 dd 0  ; Hide it from Linux fdisk(1).
+  partition_4:  ; Partition 1. This is a fake partition which spans the entire HDD.
+  ;assert_at .header+0x1be
+  .status:	db 0x80  ; Bootable.
+  .head:	db 0
+  .sector:	db 1
+  .cylinder:	db 0
+  .type:	db 0x81  ; Minix.
+  .last_head:	db 16
+  .last_sector:	db -1
+  .last_cylinder: db -1
+  .lba_first:	dd 0
+  .lba_count:	dd 0x7fffffff ; Minix can't use the partition if this value is negative.
+  ;assert_at .header+0x1fe
+  boot_signature: dw BOOT_SIGNATURE
+  ;assert_at .header+0x200
+%endm
 
-; /*
-;  * Read in shoe
+%if MINIX
+  emit_partition_table  ; Emit it before _procimagefile, because we otherwise _procimagefile wouldn't fit to the MBR sector.
+%endif
+
+; /* Processes the next (1 KiB) read from the image file. Copies the first
+;  * block to to _bufptr, and copies later blocks consecutively. (There are
+;  * no bound checks.)
 ;  *
-;  * This function reads in the rest of the shoe. This is loaded
-;  * into memory immediately following the end of the boot block.
-;  * It will contain the rest of the code needed to boot minix.
+;  * Returns 2 * ROOT_INODE (== 2) if the end-of-file has been reached (i.e.
+;  * filesize has decreased to 0); otherwise 0. 0 means that the caller
+;  * should continue reading the next block, and call again.
 ;  */
-; static inode_nr readshoe F1(buffer *, bp) {
-;   unsigned int hsize;                   /* size of a.out header */
-;   hsize = 0;
-;   if (startload != 0)
-;     hsize = ((struct exec *) bp)->a_hdrlen;
+; inode_nr procimagefile(buffer_t *bufp) {
+;   unsigned int hsize;  /* Size of a.out header, for SHOELACE. */
+;   hsize = (startload == 0) ? 0 : ((struct exec*)bufp)->a_hdrlen;  /* This is the behavior for SHOELACE. See the assembly code for MINIX. */
 ;   startload = 0;
-;   copyviabufptr((char *) bp + hsize, sizeof(*bp)-hsize);
-;   filesize -= sizeof(*bp);
-;   hsize = 0;
-;   if (checkfilesize() <= 0)
-;     hsize = 2*ROOT_INODE;
-;   return hsize;
+;   copyviabufptr((char*)bufp + hsize, sizeof(*bufp) - hsize);
+;   filesize -= sizeof(*bufp);
+;   return checkfilesize() <= 0 ? 2 * ROOT_INODE : 0;
 ; }
 ;
-; The argument `bp' is passed in register BX.
+; The argument `bufp' is passed in register BX.
 ;
-; The starting code of the function is shared with _dirscan_or_readshoe, so we don't include it here.
-;_readshoe:
+; The starting code of the function is shared with _procdir_or_procimagefile, so we don't include it here.
+;_procimagefile:
 ;		push si
 ;		push di
 ;		xor ax, ax
 ;		cmp al, 1  ; Self-modifying code: the constant 1 will be modified to 0 below.
 ;_startload: equ $-1  ; unsigned char startload = 1;
-_readshoe.in:
+_procimagefile.in:
 		xor ax, ax
+		xor cx, cx
 		cmp al, 1  ; Self-modifying code: the constant 1 will be modified to 0 below.
 _startload: equ $-1  ; unsigned char startload = 1;
-		je short .1
+		je short .hsize_and_filesize_ok
 		dec byte [_startload]  ; _startload := 0.
-		mov al, [bx+0x4]
-.1:
-		mov cx, 0x400  ; sizeof(buffer).
+; Here we compute hsize (in register AX) and _filesize. The default values
+; (hsize == 0, _filesize is the image file size read from the inode, i.e.
+; struct_stat.st_size). If the default is good, we don't have to change anything.
+;
+; Using hsize and filesize we can control which part of the file will be loaded
+; to IMAGE_SEG:0 : _filesize-hsize bytes starting at file offset hsize will
+; be loaded. The defaut is to load the entire image file.
+;
+; To compute hsize and _filesize, we can use the header fields within the
+; first 0x400 bytes of the image files, already read at DS:BX. We must not
+; increase filesize here. We can ruin registers CX, DX, SI, DI and FLAGS. We
+; must keep BP and BX (bufp) intact, and we must set AX to our desired
+; hsize.
+%define CL_IS_ZERO 0
+%if SHOELACE
+  ; For SHOELACE, we limit _filesize to min(_filesize, a_hdrlen + a_text +
+  ; a_data), and skip the a.out executable header (of size a_hdrlen,
+  ; typically 0x20) at the beginning. The first limitation skips about 12
+  ; KiB of symbols at the end of /shoelace.
+  %define CL_IS_ZERO 1  ; Enable optimization below.
+		mov al, [bx+4]  ; AX := hsize := ((struct exec*)bufp)->a_hdrlen. Typically 0x20. AH is already 0.
+		cmp [bx+8+2], cx  ; High word of a_text.
+		jnz short .hsize_and_filesize_ok  ; Don't limit if a_text is >=0x10000 bytes. Typically a_text is 0x6e40 bytes.
+		; We don't have space in the MBR sector for the following check.
+		;cmp [bx+0xc+2], cx  ; High word of a_data.
+		;jnz short .hsize_and_filesize_ok  ; Don't limit if a_data is >=0x10000 bytes. Typically a_data is 0x1cd4 bytes.
+		mov dx, ax
+		add dx, [bx+8]  ; DX := ((struct exec*)bufp)->a_text. It usually fits to a 16-bit word.
+		jc short .hsize_and_filesize_ok  ; If it overflows, don't limit _filesize. Unfortunately we have no space for this check in the MBR sector.
+		add dx, [bx+0xc]  ; DX ++= ((struct exec*)bufp)->a_data. It usually fits to a 16-bit word.
+		jc short .hsize_and_filesize_ok  ; If it overflows, don't limit _filesize. Unfortunately we have no space for this check in the MBR sector.
+		mov si, _filesize
+		cmp word [si+2], cx  ; CX is already 0.
+		jnz short .large_enough  ; High word is nonzero, file size is >0x10000 bytes. This is very unusual, typical /shoelae file size is 47 KiB.
+		cmp word [si], dx
+		jbe short .hsize_and_filesize_ok  ; _filesize is already too small, don't limit.
+.large_enough:
+		mov [si+2], cx  ; Set high word of _filesize to 0.
+		mov [si], dx  ; Decrease (set) low word of _filesize to DX.
+%endif
+%if MINIX
+  ; For MINIX, we set hsize to 0x200 to skip the bootblok at the beginning
+  ; of the Minix kernel image.
+  ;
+  ; We also limit _filesize to min(_filesize, (menu_cs - 0x40) << 4) to skip
+  ; the menu code and data at the end of the image (~14.5 KiB). We get
+  ; menu_cs from the first sector. The structure is one of these:
+  ;
+  ; * DS:BP+0x1f6: dw final, menu_ds, menu_pc, menu_cs, bootsig
+  ; * DS:BP+0x1f6: dw ?      final,   menu_ds, menu_pc, menu_cs
+  ;
+  ; Here bootsig is 0xaa55, menu_cs > 0x60, menu_ds >= menu_cs, menu_pc ==
+  ; 0. (Some Minix kernels have menu_ds == menu_ds, some have menu_ds >
+  ; menu_cs.)
+  %define CL_IS_ZERO 1  ; Enable optimization below.
+		lea di, [bx+0x200-2]
+		cmp word [di], BOOT_SIGNATURE
+		jne short .no_bootsig
+		cmp word [di-4], cx  ; Is menu_pc == 0?
+		mov ax, [di-2]  ; DX := menu_cs.
+		mov di, [di-6]  ; DI := menu_ds.
+		jmp short .have_menu_cs_and_ds
+.no_bootsig:
+		cmp word [di-2], cx  ; Is menu_pc == 0?
+		jne short .filesize_ok  ; Bad values at the end of the boot sector, don't limit _filesize.
+		mov ax, [di]  ; DX := menu_cs.
+		mov di, [di-4]  ; DI := menu_ds.
+.have_menu_cs_and_ds:
+		cmp di, ax
+		jb short .filesize_ok  ; menu_ds < menu_cs, probably all values are bad, don't limit _filesize.
+		cmp ax, strict word 0x60
+		jbe short .filesize_ok  ; menu_cs <= 0x60, probably all values are bad, don't limit _filesize.
+.calc_filesize_based_on_menu_cs:
+		sub ax, strict word 0x40
+		mov di, 0x10
+		mul di  ; DX:AX (filesize_limit) := AX * DI == (menu_cs - 0x40) << 4.
+		mov si, _filesize
+		cmp dx, [si+2]
+		ja short .filesize_ok  ; High word of filesize_limit larger than _filesize, so we can't decrease it.
+		jb short .large_enough
+		cmp ax, [si]
+		jae short .filesize_ok  ; High word of filesize_limit is equal, low word is larger or equal than _filesize, so we can't decrease it.
+.large_enough:
+		mov [si+2], dx  ; Set high word of _filesize, decreasing it.
+		mov [si], ax    ; Set low  word of _filesize, decreasing it.
+.filesize_ok:
+		mov ax, 0x200  ; Set hsize to 0x200 to skip the bootblok at the beginning of the Minix kernel image.
+%endif
+
+.hsize_and_filesize_ok:
+%if CL_IS_ZERO
+		mov ch, 0x400>>8  ; sizeof(buffer_t) == 0x400.
+%else
+		mov cx, 0x400  ; sizeof(buffer_t).
+%endif
+%undef CL_IS_ZERO
 		sub cx, ax
-		add bx, ax
+		xchg si, ax  ; SI := AX; AX := junk.
+		add si, bx  ; SI := (char*)bufp + hsize.
 		; call _copyviabufptr  ; We inline this call.
-; Copy local buffer
-;
-; This function copies a local buffer to an arbitrary location
-; via bufseg:bufptr. On completion bufptr is updated. The
-; calling sequence is:
-;
-;       void copyviabufptr(char *buf, unsigned int bytes)
-;_copyviabufptr:
-		; mov cx, cx  ; CX := bytes to copy; AX := junk.
-		mov dx, BOOTSEG  ; Self-modifying code: the constant here will be modified.
+		mov dx, IMAGE_SEG  ; Self-modifying code: the constant here will be modified.
 _bufptr_seg: equ $-2
 		mov es, dx
 		mov di, 0  ; Self-modifying code: the constant here will be modified.
@@ -542,10 +848,9 @@ _bufptr_ofs: equ $-2
 		mov word [_bufptr_seg], dx
 .di_is_small_enough:
 		shr di, 1
-		mov si, bx  ; pointer to buffer
-		rep movsb
+		rep movsb  ; Copy sizeof(*bufp)-hsize bytes from bufp to the image output buffer (_bufptr).
 		mov [_bufptr_ofs], di
-		sub word [_filesize], 0x400  ; sizeof(buffer).
+		sub byte [_filesize+1], 0x400>>8  ; sizeof(buffer_t) == 0x400.
 		sbb word [_filesize+2], cx  ; CX is 0 now.
 		xor si, si
 		call _checkfilesize
@@ -558,76 +863,52 @@ _bufptr_ofs: equ $-2
 		pop si  ; Restore.
 		ret
 
-		times 0x1b8-($-_start) hlt
-disk_id_signature: db 'BotL'
-;assert_at .header+0x1bc
-reserved_word_0: dw 0
-; Minix and Shoelace sort partitions by start LBA (signed), but they explicitly put the ==0 value last.
-; So our partition will end up being /dev/hd4. So we put it to the correct spot.
-partition_1:
-		times 4 dd 0  ; Hide it from Linux fdisk(1).
-partition_2:  ; Ugly enough so that Shoelace and Minix don't recognize it. Linux fdisk(1) prints it though.
-		times 4 dd 0  ; Hide it from Linux fdisk(1).
-partition_3:  ; Ugly enough so that Shoelace and Minix don't recognize it. Linux fdisk(1) prints it though.
-		times 4 dd 0  ; Hide it from Linux fdisk(1).
-partition_4:  ; Partition 1. This is a fake partition which spans the entire HDD.
-;assert_at .header+0x1be
-.status:	db 0x80  ; Bootable.
-.head:		db 0
-.sector:	db 1
-.cylinder:	db 0
-.type:		db 0x81  ; Minix.
-.last_head:	db 16
-.last_sector:	db -1
-.last_cylinder:	db -1
-.lba_first:	dd 0
-.lba_count:	dd 0x7fffffff ; Minix can't use the partition if this value is negative.
-;assert_at .header+0x1fe
-boot_signature: dw BOOT_SIGNATURE
-;assert_at .header+0x200
+%if SHOELACE
+  emit_partition_table
+%endif
 
-; /*
-;  * Search the root directory for an entry
+; /* Processes the next block of a directory by searching for an entry named
+;  * in the NUL-terminated string imgname. It will be called with the root
+;  * directory (/) only.
 ;  *
-;  * On entry to this routine, we will have block full of directory
-;  * entries. Scan all the directory entries for the one we want. If
-;  * the entry is found, its inode number will be returned. If the
-;  * entry is not found, but the directory has not been searched in
-;  * full, then return 0 - otherwise return ROOT_INODE. Note that
-;  * there is potential for ambiguity since a return value
-;  * of ROOT_INODE could mean that a the root directory has been
-;  * found or that the required entry is not present. The caller
-;  * should interrogate filesize to distinguish between the two
-;  * cases (filesize <= 0 always indicates the latter).
+;  * Returns the inode number of the imgname as soon is at has been found;
+;  * otherwise ROOT_INODE (== 1) if the end-of-directory has been reached
+;  * without finding imgname; otherwise 0. Please note that 0 is an invalid
+;  * inode number. 0 means that the caller should continue reading the next
+;  * block, and call again.
+;  *
+;  * There is potential for ambiguity since a return value of ROOT_INODE
+;  * could mean that a the root directory has been found or that the
+;  * required entry is not present. The caller should check filesize <= 0,
+;  * which indicates the latter if true.
 ;  */
-; inode_nr dirscan F1(buffer *, dp) {
-;   char *ip;				/* name comparison pointer */
-;   char *ep;				/* directory entry name */
-;   dir_struct *edp;			/* end of buffer */
-;   inode_nr thisnode;			/* current inode */
-;   for (edp = (dir_struct *) dp + sizeof(*dp)/sizeof(dir_struct);
-;        (dir_struct *) dp < edp;
-;        ((dir_struct *) dp)++) {
-;     if ((thisnode = ((dir_struct *) dp)->d_inum) != 0) {
-;       for (ip = filename, ep = ((dir_struct *) dp)->d_name; *ip++ == *ep; ) {
-; 	if (*ep++ == 0)
-; 	  return thisnode;
+; inode_nr procdir(buffer_t *bufp) {
+;   char *ip;                           /* name comparison pointer */
+;   char *ep;                           /* directory entry name */
+;   dir_struct *edp;                    /* end of buffer */
+;   inode_nr thisnode;                  /* current inode */
+;   for (edp = (dir_struct*)bufp + sizeof(*bufp) / sizeof(dir_struct);
+;        (dir_struct*)bufp < edp;
+;        ((dir_struct*)bufp)++) {
+;     if ((thisnode = ((dir_struct*)bufp)->d_inum) != 0) {
+;       for (ip = imgname, ep = ((dir_struct*)bufp)->d_name; *ip++ == *ep; ) {
+;       if (*ep++ == 0)
+;         return thisnode;
 ;       }
 ;     }
 ;     filesize -= sizeof(dir_struct);
-;     if (checkfilesize() <= 0)
-;       return ROOT_INODE;
+;     if (checkfilesize() <= 0) return ROOT_INODE;
 ;   }
 ;   return 0;
 ; }
 ;
-; The argument `bp' is passed in register BX.
-_dirscan_or_readshoe:
+; The argument `bufp' is passed in register BX.
+_procdir_or_procimagefile:
 		push si
 		push di
-		jz short _dirscan.in  ; We use this inestead of a function pointer.
-		jmp near _readshoe.in
-_dirscan.in:
+.or_opcode_byte:
+		test ax, strict word _procimagefile.in-($+3)  ; Self-modifying code: to change the function pointer fn to _procimagefile, this opcode byte will be modified from this harmless `test ax, ...' (0xa9) to `jmp strict near' (0xe9).
+_procdir.in:
 		lea cx, [bx+0x400]  ; CX will keep holding edp.
 		push ds
 		pop es  ; For the `cmpsb' below.
@@ -638,7 +919,7 @@ _dirscan.in:
 		mov ax, [bx]  ; thisnode. This will also be the function return value.
 		test ax, ax
 		jz short .3
-		mov si, _lacename
+		mov si, _imgname1+1  ; +1 to skip over the leading `/'.
 		lea di, [bx+2]  ; Skip over d_inum.
 .2:
 		cmpsb
@@ -667,85 +948,61 @@ _dirscan.in:
 ;
 ; The intention of this code is to provide a root directory scanner
 ; and file reader for the boot code in as small a space as possible.
-; The code will read into memory the rest of the shoe which will
+; The code will read into memory the image file, which will
 ; then perform the boot.
 
-; void shoehorn F0() {
-;   inode_nr minixnode;                   /* inode of image */
-;   block_nr inodeblock;                  /* block where inodes starts */
-;   int minixinx;                         /* index to minix node */
-;   INODEFN fn;                           /* data disposition */
-;   int j;                                /* index */
-;   zone_nr *zp;                          /* zone number pointer */
-;   int len;                              /* number of zones in list */
-;   int ind;                              /* indirection */
-; /* Get parameters from the disk superblock */
-;   readblock((long) SUPER_BLOCK, (buffer *) &blockbuf[0]);
+; void loadandrunimage(void) {
+;   inode_nr node;        /* inode of /, then inode of image */
+;   block_nr inodeblock;  /* block where inodes starts */
+;   int nodeidx;          /* index to node */
+;   INODEFN fn;           /* data disposition */
+;   int j;                /* index */
+;   zone_nr *zp;          /* zone number pointer */
+;   int len;              /* number of zones in list */
+;   int indirection;
+;   /* Get parameters from the disk superblock */
+;   readblock((long) SUPER_BLOCK, (buffer_t*)&blockbuf[0]);
 ;   zsize = 1 << ((struct super_block *) blockbuf)->s_log_zone_size;
 ;   inodeblock = SUPER_BLOCK + 1 +
 ;                ((struct super_block *) blockbuf)->s_imap_blocks +
 ;                ((struct super_block *) blockbuf)->s_zmap_blocks;
-; /* Locate ShoeLace then load it */
-;   for (minixnode = ROOT_INODE, fn = (INODEFN) dirscan, j = 3;
-;        --j;
-;        fn = (INODEFN) readshoe) {
+;   /* Locate the image, then load it. */
+;   node = ROOT_INODE;
+;   fn = procdir;  /* For the first loop iteration (/). */
+;   /* Do the loop body twice: once for / and once for the file. */
+;   for (j = 2; j >= 1; --j) {
 ;     readblock((unsigned long) (inodeblock +
-;                                (--minixnode)/(BLOCK_SIZE/sizeof(d_inode))),
-;               (buffer *) &blockbuf[0]);
-;     minixinx = minixnode % (BLOCK_SIZE/sizeof(d_inode));
-;     filesize = ((d_inode *) blockbuf)[minixinx].i_size;
-; /* Inline form of dozones() in order to save precious bytes */
-;     for (zp = &((d_inode *) blockbuf)[minixinx].i_zone[0],
-;          ind = 0, len = NR_DZONE_NUM;
-;          
-;          ind < 3 && (minixnode = scanzone(zp, ind, len, fn)) == 0;
-;          
-;          zp += len, ind++, len = 1)
-;       ;
-;     if (minixnode <= ROOT_INODE)
-;       for (endshoename = '\r', print(noshoename); ; )
-;         ;
+;                                (--node)/(BLOCK_SIZE/sizeof(d_inode))),
+;               (buffer_t*)&blockbuf[0]);
+;     nodeidx = node % (BLOCK_SIZE / sizeof(d_inode));
+;     filesize = ((d_inode*)blockbuf)[nodeidx].i_size;
+;     zp = &((d_inode*)blockbuf)[nodeidx].i_zone[0];
+;     indirection = 0; len = (NR_ZONE_NUMS - 2);  /* Direct zones. */
+;     while (indirection < 3 &&
+;            (node = scanzone(zp, indirection, len, fn)) == 0) {
+;       zp += len; ++indirection; len = 1;
+;     }
+;     if (node <= ROOT_INODE) fatal("Lost /", imgname, NULL);
+;     fn = procimagefile;  /* For the second loop iteration (the file). */
 ;   }
 ; }
-_shoehorn:
-		;push bp  ; No need to save BP, this function doesn't return.
-		mov bp, sp
-		sub sp, byte +0x10  ; Local variables word [bp-0x6], word [bp-0x10], word [bp-0xe], word [bp-0x2] are unused.
-		;push si  ; No need to save SI, this function doesn't return.
-		;push di  ; No need to save SI, this function doesn't return.
-		mov si, _blockbuf
-		push si
-		xor ax, ax
-		mov word [bp-0x8], ax  ; Set to 0, indicate _dirscan as the ake function pointer.
-		push ax
-		mov ax, 1  ; SUPER_BLOCK.
-		push ax
-		call _readblock
-		add sp, byte +0x6
-		mov cx, [si+0xa]
-		mov ax, 1
-		shl ax, cl
-		mov [_zsize], ax
-		mov cx, [si+4]
-		times 2 inc cx
-		add cx, [si+6]
-		mov [bp-0x4], cx
-		mov byte [bp-0xa], 3  ; j.
-		xor ax, ax  ; AX (minixnode) := 1 - 1.
-.1:
-		; Now AX is minixnode.
-		push ax  ; Save minixnode.
+;
+; Helper function which uses the stack frame (BP) of _loadandrunimage. See
+; the commentn of _loadandrunimage for description and register usage.
+_loadandrunimage.process_inode:
+		; Now AX is node-1; BP is inodeblock.
+		push ax  ; Save node.
 		mov cl, 5
 		shr ax, cl
-		add ax, [bp-0x4]
+		add ax, bp  ; AX += BP (inodeblock).
 		xor cx, cx
 		mov si, _blockbuf
 		push si
-		push cx
+		push cx  ; 0. High word of the lbn argument of readblock is 0 when reading the nodes.
 		push ax
 		call _readblock
 		add sp, byte +0x6
-		pop bx  ; Restore BX := minixnode.
+		pop bx  ; Restore BX := node.
 		and bx, byte 0x1f
 		mov cl, 5
 		shl bx, cl
@@ -753,41 +1010,67 @@ _shoehorn:
 		mov [_filesize], cx
 		mov cx, [si+bx+6]
 		mov [_filesize+2], cx
-		lea bx, [si+bx+0xe]
-		mov [bp-0xc], bx
-		xor si, si  ; ind.
+		lea bx, [si+bx+0xe]  ; Set BX (zp).
+		xor si, si  ; indirection.
 		mov di, 7  ; len.
 .3:
-		push word [bp-0x8]
+		;push bx  ; No need to save BX (zp), the `call _scanzone' below is special, and doesn't ruin it.
+		;push fn_arg  ; fn. Not passed.
 		push di  ; len.
-		push si  ; indx.
-		push word [bp-0xc]
+		push si  ; indirection.
+		;push bx  ; Pass argument zp of _scanzone below in BX (zp).
 		call _scanzone
-		add sp, byte +0x8
-		; Now: AX (minixnode) has been updated by the return value of _scanzone.
+		times 2 pop cx  ; Clean up 2 arguments of _scanzone above from the stack.
+		;pop bx  ; No need to restore BX (zp).
+		; Now: AX (node) has been updated by the return value of _scanzone.
 		test ax, ax
 		jnz short .4
-		times 2 add [bp-0xc], di
+		times 2 add bx, di  ; BX (zip) += 2 * DI.
 		mov di, 1
-		inc si  ; ind.
-		cmp si, byte 3  ; ind.
+		inc si  ; indirection.
+		cmp si, byte 3  ; indirection.
 		jne short .3
 .4:
-		cmp ax, strict word 1  ; ROOT_INODE.
-		ja short .6
-		mov byte [_endshoename], 13  ; The message would be comprehensible without the CRLF at the end.
+		ret
+_loadandrunimage:
+		;push bp  ; No need to save BP, this function doesn't return.  ; In this function, BP is not used as a frame pointer, but it will be used for local variable inodeblock below.
+		;push si  ; No need to save SI, this function doesn't return.
+		;push di  ; No need to save DI, this function doesn't return.
+		xor ax, ax
+		mov si, _blockbuf
+		push si  ; _blockbuf. Argument 2 of _readblock below.
+		push ax  ; 0. High word of SUPER_BLOCK. Argument 1 of _readblock below.
+		inc ax  ; BP := 1.
+		push ax  ; 1. Low word of SUPER_BLOCK. Argument 1 of _readblock below.
+		call _readblock
+		add sp, byte +0x6
+		mov cx, [si+0xa]  ; s_log_zone_size. Typically it's 0. 0 means: 1 zone == 1 block == 1 KiB. 5 means: 1 zone == (1<<5) blocks == 32 KiB.
+		mov ax, 1
+		shl ax, cl
+		mov [_zsize], ax
+		mov bp, [si+4]
+		times 2 inc bp
+		add bp, [si+6]  ; Set BP (inodeblock) to its final value.
+		xor ax, ax  ; AX (node) := ROOT_INODE - 1 == 0.
+		call .process_inode  ; ROOT_INODE (/): AX == ROOT_INODE - 1.
+		sub ax, strict word 1  ; Sets AX -= 1, and also updates the files with respect to `cmp ax, strict word 1'.
+		ja short .found_image_file  ; Jump iff node > ROOT_INODE.
+		mov byte [_endimgname], CR  ; The message would be equally comprehensible without the CRLF at the end.
 		jmp strict near fatal_lost_file  ; Doesn't return.
-.6:
-		inc word [byte bp-0x8]  ; Set to nonzero, indicate _readshoe as the fake function pointer.
-		dec ax  ; AX (minixnode) -= 1.
-		dec byte [bp-0xa]  ; j.
-		jnz short .1
-		; Fall through to jump_to_shoelace.
+.found_image_file:
+		mov byte [_procdir_or_procimagefile.or_opcode_byte], 0xe9  ; Self-modifying code: to change the function pointer fn to _procimagefile, we modify the opcode byte at _procdir_or_procimagefile.or_opcode_byte from `test ax, ...' (0xa9) to `jmp strict near' (0xe9).
+		call .process_inode  ; inode of the image file. AX == inode number of the file - 1.
+		; Fall through to jump_to_image.
 
-jump_to_shoelace:
-		push ds  ; Segment used by _main(...) in /shoelace for getting e.g. _diskcode (see above).
-		push ax  ; Dummy value, popped by _main(...) in /shoelace.
-		jmp BOOTSEG:0  ; Jump to _main(...) in /shoelace.
+jump_to_image:
+%if SHOELACE
+		jmp IMAGE_SEG:0  ; Jump to _main(...) in /shoelace. The BPB segment (DS, with _nsectors) and the dummy offset value has already been pushed by the `call _loadandrunimage' above.
+%elif MINIX
+		ret  ; jmp near jump_to_minix  ; The actual code is in the MBR sector, because there is enough space there.
+%else
+  %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_IMAGE
+  times -1 nop
+%endif
 
 %if $-_start>0x400
   %error ERROR_BOOTLACE_TOO_LONG
@@ -796,8 +1079,7 @@ jump_to_shoelace:
 
 absolute $  ; BSS.
 		resb (_start-$)&1  ; Aligment.
-_blockbuf:	resb 0x400  ; static buffer blockbuf  ; block buffer. 0x400 bytes.
-_filesize:	resd 1  ; long filesize;  size of file. 4 bytes.
+_blockbuf:	resb 0x400  ; buffer_t blockbuf;  ; block buffer. 0x400 bytes.
 
 ; No more global variables, we have them all. Total size: a_bss == 0x40a bytes.
 

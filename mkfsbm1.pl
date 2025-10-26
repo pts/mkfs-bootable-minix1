@@ -172,14 +172,14 @@ if (defined($boot_fn)) {
   my $md = "\xf8";  # Media descriptor byte for HDD. We don't support creating a bootable floppy image with bootlace+shoelace.
   if ($boot_data =~ s@^\x01\x03\x10\x04\x20\0\0\0 (..)\0\0 \0\0\0\0 ..\0\0 \0\0\0\0 ..[\0\x01]. ..\0\0 \xeb\x29 \x99 12345678 [\x40-\xff]\0.{30} (\xea\x30\0\xc0\x07)@\xeb\x29\x99ShoeLace\0\x02\x02\x02\0\0\0\0\0\0$md\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0$2@sx and
       ($a_text = unpack("v", $1)) >= 0x1fe and $a_text <= 0xffe) {
-    # The bootlace a.out executable file of the Shoelace boot manager.
+    # The bootlace a.out executable file of the ShoeLace bootloader.
     $boot_data = substr($boot_data, 0, $a_text);
     substr($boot_data, 0x1fe, 0) = "\x55\xaa";  # Insert the boot signature word.
     goto FIX_SHOELACE;
   } elsif ($boot_data =~ m@^\x01\x03[\0\x10\x20\x30][\x04\x10]@sx) {
     die("fatal: unrecognized a.out file for --boot=: $boot_fn\n");
   } elsif ($boot_data =~ s@^\xeb\x29 \x99 ShoeLace\0\x02.{30} (\xea\x30\0\xc0\x07)@\xeb\x29\x99ShoeLace\0\x02\x02\x02\0\0\0\0\0\0$md\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0$1@sx) {
-    # A bootlace image of the Shoelace boot manager, extracted from the boot block of an existing Minix filesystem (floppy boot sector or HDD MBR);
+    # A bootlace image of the ShoeLace bootloader, extracted from the boot block of an existing Minix filesystem (floppy boot sector or HDD MBR);
     die("fatal: boot signature not found in bootlace image: $boot_fn\n") if length($boot_data) < 0x200 or substr($boot_data, 0x1fe, 2) ne "\x55\xaa";
    FIX_SHOELACE:
     # bootlace tries to find the Minix filesystem on a partition, but we have it on the entire disk. So we binary patch the bootlace code below to use the entire disk.
