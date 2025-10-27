@@ -141,7 +141,7 @@
 bits 16
 cpu 8086
 
-; Minix 1.5 device numbers.
+; Minix 1.5 device numbers. The DEV_HD* ones have changed (exceptfor DEV_HD0) in Minix 1.6.
 DEV_FD0 equ 0x200  ; GRUB (fd0): First floppy.
 DEV_HD0 equ 0x300  ; GRUB (hd0): Start of first hard disk.
 DEV_HD1 equ 0x301  ; GRUB (hd0,1): First hard disk, partition 1.
