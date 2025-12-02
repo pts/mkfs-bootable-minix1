@@ -136,7 +136,7 @@
 
 #define PROG_ORG 1536           /* where does kernel begin in abs mem */
 #define DS_OFFSET 4L            /* position of DS written in kernel text seg */
-#define SYM_OFFSET 2L		/* position of syms writ in kernel text seg */
+#define SYM_OFFSET 2L		/* position of syms written in kernel text seg */
 #define SECTOR_SIZE 512         /* size of buf */
 #define READ_UNIT 512           /* how big a chunk to read in */
 #define KERNEL_D_MAGIC 0x526F   /* identifies kernel data space */
@@ -176,8 +176,8 @@ int buf_bytes;                  /* # bytes in buf at present */
 char buf[SECTOR_SIZE];          /* buffer for output file */
 char zero[SECTOR_SIZE];         /* zeros, for writing bss segment */
 
-char sym_flag;			/* nonzero to load symbol tables */
-char bss16_flag;		/* nonzero to mask a_bss to 16 bits */
+char sym_flag;			/* nonzero to add symbol tables to the output image (default: strip symbol tables) */
+char bss16_flag;		/* nonzero to mask (limit) a_bss to 16 bits (default: emit full 32 bits) */
 
 unsigned click_shift;		/* CLICK_SHIFT used to compile kernel/mm/fs */
 unsigned clicksize;		/* CLICK_SIZE used to compile kernel/mm/fs */
