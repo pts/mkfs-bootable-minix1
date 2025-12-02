@@ -241,7 +241,7 @@ int main ARGS2((argc, argv), int argc, char *argv[])
 
   /* Take any symbols flag out of args. */
   for (i = 1; i < argc; ++i) {
-	if (argv[i][0] == '-' && (argv[i][1] != 's' || argv[i][1] == 'b') && argv[i][2] == '\0') {
+	if (argv[i][0] == '-' && (argv[i][1] == 's' || argv[i][1] == 'b') && argv[i][2] == '\0') {
 		int j;
 		char *flagp = (argv[i][1] == 's') ? &sym_flag : &bss16_flag;
 		for (j = i + 1; j < argc; ++j)
