@@ -278,7 +278,7 @@ int main ARGS2((argc, argv), int argc, char *argv[])
   patch1();
   patch2();
   patch3();
-  exit(0);
+  return 0;
 }
 
 void copy1 ARGS1((file_name), CONST char *file_name)
