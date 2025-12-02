@@ -178,13 +178,14 @@ char zero[SECTOR_SIZE];         /* zeros, for writing bss segment */
 
 char sym_flag;			/* nonzero to add symbol tables to the output image (default: strip symbol tables) */
 char bss16_flag;		/* nonzero to mask (limit) a_bss to 16 bits (default: emit full 32 bits) */
+char compat_flag;		/* nonzero to modify the bootblok in a way compatible with Minix 1.5.10 /usr/src/tools/build.c */
 
 unsigned click_shift;		/* CLICK_SHIFT used to compile kernel/mm/fs */
 unsigned clicksize;		/* CLICK_SIZE used to compile kernel/mm/fs */
 				/* click_size would be ambiguous */
 
 struct sizes {
-  unsigned long base;		/* offset from start of programs */
+  unsigned long base;		/* offset from start of program */
   unsigned long end;		/* offset to byte after last in this program */
   unsigned short ds;		/* data segment after loading */
   unsigned short ip;		/* instruction pointer after loading */
@@ -240,14 +241,17 @@ int main ARGS2((argc, argv), int argc, char *argv[])
   if (*(char*)&programs != 5) pexit("little-endian machine required", "");  /* This fails on big endian and PDP-11 endian systems. */
 
   /* Take any symbols flag out of args. */
-  for (i = 1; i < argc; ++i) {
-	if (argv[i][0] == '-' && (argv[i][1] == 's' || argv[i][1] == 'b') && argv[i][2] == '\0') {
+  for (i = 1; i < argc; ) {
+	if (argv[i][0] == '-' && (argv[i][1] == 's' || argv[i][1] == 'b' || argv[i][1] == 'c') && argv[i][2] == '\0') {
 		int j;
-		char *flagp = (argv[i][1] == 's') ? &sym_flag : &bss16_flag;
-		for (j = i + 1; j < argc; ++j)
-		argv[j - 1] = argv[j];
+		char *flagp = (argv[i][1] == 's') ? &sym_flag : (argv[i][1] == 'b') ? &bss16_flag : &compat_flag;
+		for (j = i + 1; j < argc; ++j) {
+			argv[j - 1] = argv[j];
+		}
 		--argc;
 		*flagp |= 1;
+	} else {
+		++i;
 	}
   }
 
@@ -255,7 +259,7 @@ int main ARGS2((argc, argv), int argc, char *argv[])
   } else if (argc == DB + 2 + 2) {
     ++programs;  /* DB (db) is specified. */
   } else {
-    pexit("Usage: buildm1 [-s] [-b] <bootblok> <kernel> <mm> <fs> <init> <menu> [<db>] <image>", "");
+    pexit("Usage: buildm1 [-s] [-b] [-c] <bootblok> <kernel> <mm> <fs> <init> <menu> [<db>] <image>", "");
   }
 
   IOinit();			/* check for DMAoverrun (DOS) */
@@ -559,6 +563,8 @@ void patch1 ARGS0()
 
   unsigned short sectrs;
 
+  if (compat_flag && sizes[DB].end != sizes[DB].base) pexit("<db> must have 0 size if -c is specified", "");
+
   if (sizes[INIT].end % clicksize != 0)
 	pexit("MINIX is not multiple of clicksize bytes", "");
 
@@ -568,14 +574,21 @@ void patch1 ARGS0()
      ++sectrs;
 
   read_sector(0, (char*)ubuf1);          /* read in boot block */
-  set_le16(ubuf1 + SECTOR_SIZE - (8 << 1), sizes[DB].ds);
-  set_le16(ubuf1 + SECTOR_SIZE - (7 << 1), sizes[DB].ip);
-  set_le16(ubuf1 + SECTOR_SIZE - (6 << 1), sizes[DB].cs);
-  set_le16(ubuf1 + SECTOR_SIZE - (5 << 1), sectrs);
-  set_le16(ubuf1 + SECTOR_SIZE - (4 << 1), sizes[MENU].ds);
-  set_le16(ubuf1 + SECTOR_SIZE - (3 << 1), sizes[MENU].ip);
-  set_le16(ubuf1 + SECTOR_SIZE - (2 << 1), sizes[MENU].cs);
-  set_le16(ubuf1 + SECTOR_SIZE - (1 << 1), 0xAA55);
+  if (compat_flag) {
+    set_le16(ubuf1 + SECTOR_SIZE - (4 << 1), sectrs);
+    set_le16(ubuf1 + SECTOR_SIZE - (3 << 1), sizes[MENU].ds);
+    set_le16(ubuf1 + SECTOR_SIZE - (2 << 1), sizes[MENU].ip);
+    set_le16(ubuf1 + SECTOR_SIZE - (1 << 1), sizes[MENU].cs);
+  } else {
+    set_le16(ubuf1 + SECTOR_SIZE - (8 << 1), sizes[DB].ds);
+    set_le16(ubuf1 + SECTOR_SIZE - (7 << 1), sizes[DB].ip);
+    set_le16(ubuf1 + SECTOR_SIZE - (6 << 1), sizes[DB].cs);
+    set_le16(ubuf1 + SECTOR_SIZE - (5 << 1), sectrs);
+    set_le16(ubuf1 + SECTOR_SIZE - (4 << 1), sizes[MENU].ds);
+    set_le16(ubuf1 + SECTOR_SIZE - (3 << 1), sizes[MENU].ip);
+    set_le16(ubuf1 + SECTOR_SIZE - (2 << 1), sizes[MENU].cs);
+    set_le16(ubuf1 + SECTOR_SIZE - (1 << 1), 0xAA55);  /* Boot sector boot signature. */
+  }
   write_sector(0, (char*)ubuf1);
 }
 
