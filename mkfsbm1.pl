@@ -118,7 +118,7 @@ my $boot_fn;
 my $super_fn;
 my $kernel_fn;
 my $inodec;
-die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--help";
+die("Usage: $0 [<flag>...] <device> [<byte-size>]\n") if !@ARGV or $ARGV[0] eq "--help";
 { my $i;
   for ($i = 0; $i < @ARGV; ++$i) {
     my $arg = $ARGV[$i];
@@ -156,6 +156,7 @@ die("Usage: $0 [<flag>...] <device> [<size>]\n") if !@ARGV or $ARGV[0] eq "--hel
 die("fatal: minix1 inode count too small, must be at least 1: $inodec\n") if defined($inodec) and $inodec < 1;  # Minimum is 1: the root inode.
 die("fatal: minix1 inode count too large: $inodec\n") if defined($inodec) and $inodec >= 0xffff;
 die("fatal: minix1 filesystem too small: $size bytes\n") if defined($size) and ($size >> 10) < get_min_blockc($inodec, $reserved_size);
+#die $size;
 die("fatal: minix1 user ID (UID) too large: $uid\n") if $uid > 0xffff;
 die("fatal: minix1 group GID (GID) too large: $gid\n") if $gid > 0xff;
 
@@ -269,7 +270,8 @@ if (defined($kernel_fn)) {
 # --- From this point we change $device_fn in F.
 
 $device_size = $device_size + 0;  # Convert "0 but true" to 0.
-$size = $device_size if !defined($size);  # Round down to block size.
+die("fatal: please specify the <size> argument (in bytes)\n") if !defined($size) and !$device_size;
+$size = $device_size if !defined($size);
 if ($do_fix_qemu) {
   $size -= $size % $size_multipliers{h};
   # The `$size - $size_multipliers{h}' below fixes the QEMU 2.11.1 disk
@@ -277,7 +279,7 @@ if ($do_fix_qemu) {
   # from the guest, even excluding this track from the geometry size it
   # returns.
 }
-my $blockc = ($do_fix_qemu ? $size - $size_multipliers{h} : 0) >> 10;  # This can make $blockc negative if $do_fix_quemu is true.
+my $blockc = ($do_fix_qemu ? $size - $size_multipliers{h} : $size) >> 10;  # This can make $blockc negative if $do_fix_quemu is true.
 die("fatal: minix1 filesystem too small: $blockc blocks\n") if $blockc < get_min_blockc($inodec, $reserved_size);
 die("fatal: minix1 filesystem too large: $blockc blocks\n") if $blockc > 0xffff;
 my $reservedblockc = ($reserved_size + 0x3ff) >> 10;
