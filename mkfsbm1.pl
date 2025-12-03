@@ -125,8 +125,10 @@ die("Usage: $0 [<flag>...] <device> [<byte-size>]\n") if !@ARGV or $ARGV[0] eq "
     if ($arg eq "--") { ++$i; last }
     elsif ($arg eq "-" or $arg !~ m@^-@) { last }
     elsif ($arg =~ s@^--device=@@) { $device_fn = $arg }
+    elsif ($arg =~ s@^--size=max@@) { $size = 0xffff << 10 }
     elsif ($arg =~ s@^--size=@@) { $size = parse_size($arg) }
     elsif ($arg =~ s@^--reserved=@@) { $reserved_size = parse_size($arg) }
+    elsif ($arg =~ s@^--inodes=max@@) { $inodec = 0xfffe }
     elsif ($arg =~ s@^--inodes=@@) { $inodec = parse_uint($arg) }
     elsif ($arg =~ s@^--uid=@@) { $uid = parse_uint($arg) }  # User ID.
     elsif ($arg =~ s@^--gid=@@) { $gid = parse_uint($arg) }  # Group ID.
@@ -150,7 +152,7 @@ die("Usage: $0 [<flag>...] <device> [<byte-size>]\n") if !@ARGV or $ARGV[0] eq "
     die("fatal: missing <device> argument\n") if $i >= @ARGV;
     $device_fn = $ARGV[$i++];
   }
-  $size = parse_size($ARGV[$i++]) if $i < @ARGV;
+  $size = ($ARGV[$i++] eq "max") ? 0xffff << 10 : parse_size($ARGV[$i - 1]) if $i < @ARGV;
   die("fatal: too many command-line arguments\n") if $i < @ARGV;
 }
 die("fatal: minix1 inode count too small, must be at least 1: $inodec\n") if defined($inodec) and $inodec < 1;  # Minimum is 1: the root inode.
