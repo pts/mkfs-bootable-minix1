@@ -141,6 +141,7 @@ die("Usage: $0 [<flag>...] <device> [<byte-size>]\n") if !@ARGV or $ARGV[0] eq "
     elsif ($arg eq    "--vpc") { $do_add_vhd_footer = 1 }
     elsif ($arg eq "--no-vpc") { $do_add_vhd_footer = 0 }
     elsif ($arg eq    "--fix-qemu") { $do_fix_qemu = 1 }
+    elsif ($arg eq "--fix-qemu=up" or $arg eq "--fix-qemu-up") { $do_fix_qemu = 2 }
     elsif ($arg eq "--no-fix-qemu") { $do_fix_qemu = 0 }
     elsif ($arg eq    "--force-size") { $do_force_size = 1 }
     elsif ($arg eq "--no-force-size") { $do_force_size = 0 }
@@ -274,14 +275,15 @@ if (defined($kernel_fn)) {
 $device_size = $device_size + 0;  # Convert "0 but true" to 0.
 die("fatal: please specify the <size> argument (in bytes)\n") if !defined($size) and !$device_size;
 $size = $device_size if !defined($size);
-if ($do_fix_qemu) {
+if ($do_fix_qemu == 1) {
   $size -= $size % $size_multipliers{h};
   # The `$size - $size_multipliers{h}' below fixes the QEMU 2.11.1 disk
   # image size detection quirk: QEMU hides the last HDD track (cylinder)
   # from the guest, even excluding this track from the geometry size it
   # returns.
 }
-my $blockc = ($do_fix_qemu ? $size - $size_multipliers{h} : $size) >> 10;  # This can make $blockc negative if $do_fix_quemu is true.
+my $blockc = (($do_fix_qemu == 1) ? $size - $size_multipliers{h} : $size) >> 10;  # This can make $blockc negative if $do_fix_quemu is true.
+if ($do_fix_qemu == 2) { $size = ($blockc << 10) + $size_multipliers{h} - 1; $size -= $size % $size_multipliers{h} }
 die("fatal: minix1 filesystem too small: $blockc blocks\n") if $blockc < get_min_blockc($inodec, $reserved_size);
 die("fatal: minix1 filesystem too large: $blockc blocks\n") if $blockc > 0xffff;
 my $reservedblockc = ($reserved_size + 0x3ff) >> 10;
@@ -296,7 +298,7 @@ my $zmapblockc = 1;  # Lower estimate for $zmapblock, because $zmapblock >= 1.
 my $firstdatablock = 2 + $imapblockc + $zmapblockc + $iblockc + $reservedblockc;  # In this lower estimate for $firstdatablock, we use 1 as lower estimate for $zmapblockc.
 my $zmapblockc2;
 while (($zmapblockc2 = ($blockc - $firstdatablock + 1 + 0x1fff) >> 13) > $zmapblockc) {  # Stay in the loop if $zmapblock isn't large enough.
-  $firstdatablock = 2 + $imapblockc + ($zmapblockc = $zmapblockc2) + $iblockc + $reservedblockc;  # Increase both.
+  $firstdatablock = 2 + $imapblockc + ($zmapblockc = $zmapblockc2) + $iblockc + $reservedblockc;  # Increase both $zmapblockc and $firstdatablock.
 }
 die("fatal: assert: zmapblockc too large: $zmapblockc\n") if $zmapblockc > 8;
 my $firstreservedblock = 2 + $imapblockc + $zmapblockc + $iblockc;
