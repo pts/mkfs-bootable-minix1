@@ -129,13 +129,13 @@ my $kernel_sum_size_para = ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a25
 my $fs_data_ofs = ($fs_ofs256 + $fs_text_a256) << 8;
 sub print_and_check_sizes($) {
   my $msg = $_[0];
-  printf(STDERR "info: ${msg}Minix kernel kernel_acs=0x%x kernel_ds=0x%x size_4=0x%x0=%u sum_size_4=0x%x0 menu_etc_size=0x%x kernel_para=0x%x+0x%x+0x%x mm_para=0x%x+0x%x+0x%x fs_para=0x%x+0x%x+0x%x init_para=0x%x+0x%x+0x%x size=%u%s\n",
+  printf(STDERR "info: ${msg}Minix kernel kernel_acs=0x%x kernel_ds=0x%x size_4=0x%x0=%u sum_size_4=0x%x0 menu_etc_size=0x%x kernel_para=0x%x+0x%x+0x%x mm_para=0x%x+0x%x+0x%x fs_para=0x%x+0x%x+0x%x init_para=0x%x+0x%x+0x%x size=%u kernel=minix-1.5.10 arch=%s%s\n",
       0x60, $kernel_ds, $kernel_size_para, $kernel_size_para << 4, $kernel_sum_size_para, length($menu_etc),
       $kernel_text_a256 << 4, ($kernel_data_a256 << 4) - $kernel_syms_para, $kernel_syms_para,
       $mm_text_a256     << 4, ($mm_data_a256     << 4) - $mm_syms_para,     $mm_syms_para,
       $fs_text_a256     << 4, ($fs_data_a256     << 4) - $fs_syms_para,   , $fs_syms_para,
       $init_text_a256   << 4, ($init_data_a256   << 4) - $init_syms_para,   $init_syms_para,
-      length($bootblok) + length($_) + length($menu_etc), length($msg) ? "" : " f=$ufn");
+      length($bootblok) + length($_) + length($menu_etc), $arch, length($msg) ? "" : " f=$ufn");
   die("fatal: bad size: $ufn\n") if $size != length($_);
   die("fatal: inconsistent Minix kernel_text_a and kernel_ds: $ufn\n") if 0x60 + ($kernel_text_a256 << 4) != $kernel_ds;
   die("fatal: inconsistent Minix kernel size and sum_size: $ufn\n") if $kernel_size_para != $kernel_sum_size_para;
