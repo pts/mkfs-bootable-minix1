@@ -267,6 +267,7 @@ int main ARGS2((argc, argv), int argc, char *argv[])
 
   /* Go get the boot block and copy it to the output file or diskette. */
   copy1(argv[1]);
+  flush();
 
   /* Copy the programs to the output file or diskette. */
   for (i = 0; i < DB; i++) copy2(i, argv[i + 2]);
@@ -301,7 +302,6 @@ void copy1 ARGS1((file_name), CONST char *file_name)
         if (bytes_read < 0) pexit("read error on file ", file_name);
         if (bytes_read > 0) wr_out(inbuf, bytes_read);
   } while (bytes_read > 0);
-  flush();
   close(fd);
 }
 
@@ -541,7 +541,12 @@ void wr_out ARGS2((buffer, bytes), char buffer[READ_UNIT], int bytes)
 void flush ARGS0()
 {
   if (buf_bytes == 0) return;
+#ifdef MSDOS  /* It can only write full sectors. */
   write_sector(cur_sector, buf);
+#else  /* For the last sector, this is a partial write. This way the kernel image can be not a multiple of 0x200. */
+  lseek(image, (long)SECTOR_SIZE * (long) cur_sector, 0);
+  if (write(image, buf, buf_bytes) != buf_bytes) pexit("flush write error", "");
+#endif
   clear_buf();
 }
 
