@@ -117,8 +117,18 @@ $do_strip = 1 if !defined($do_strip) and $do_compress;
 $cfn = $ufn if !defined($cfn);
 die("fatal: --compress conflicts with --no-strip\n") if $do_compress and defined($do_strip) and !$do_strip;
 
+# Read kernel image file, and fail early for file formats not supported.
 $_ = read_file($ufn);
 printf(STDERR "info: read Minix kernel image: %s (%u bytes)\n", $ufn, length($_));
+die("fatal: this is a Minix 1.6--2.0.4 kernel image: $ufn\n") if m@^kernel\0@;  # This program supports only Minix 1.5.10 i86 and i386 kernel images.
+die("fatal: this is a Minix i86 a.out executable: $ufn\n") if m@^\x01\x03.\x04@s;  # Minix 1.6+ /boot is also like this.
+die("fatal: this is a Minix i386 a.out executable: $ufn\n") if m@^\x01\x03.\x10@s;
+die("fatal: this is a Minix a.out executable: $ufn\n") if m@^\x01\x03@s;
+die("fatal: this is a GNU i386 a.out executable: $ufn\n") if m@^\x0b\x01\0\0@s;
+die("fatal: this is a GNU i386 a.out object file: $ufn\n") if m@^\x07\x01\0\0@s;
+die("fatal: this is an ELF file: $ufn\n") if m@^\x7fELF@s;
+die("fatal: file starts with NUL byte: $ufn\n") if m@^\0@s;  # It should start with i86 boot sector code (in bootblok) instead.
+
 die("fatal: kernel image file too short: $ufn\n") if length($_) < 0x220;
 my $bootblok = substr($_, 0, 0x200);
 substr($_, 0, 0x200) = "";
