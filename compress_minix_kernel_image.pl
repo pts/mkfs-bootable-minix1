@@ -4,12 +4,37 @@ eval 'PERL_BADLANG=x;export PERL_BADLANG;exec perl -x "$0" "$@";exit 1'
 +0 if 0;eval("\n\n\n\n".<<'__END__');die$@if$@;__END__
 
 #
-# compress_minix_kernel_image.pl: strip and/or compress (using aPACK) a Minix 1.5.10 i86 or i386 kernel image
+# compress_minix_kernel_image.pl: strip and/or compress (using aPACK 1.00) a Minix 1.5.10 i86 or i386 kernel image
 # by pts@fazekas.hu at Sun Dec 14 02:07:20 CET 2025
 #
 # Typical size reduction for Minix 1.5.10 i86  kernel image --compress: 171520 --> 42176 bytes.
 # Typical size reduction for Minix 1.5.10 i386 kernel image --compress: 507392 --> 43264 bytes.
 # Most of the size reduction is because of the lots of consecutive NUL bytes in .bss section.
+#
+# Example usage: perl -x compress_minix_kernel_image.pl minix minix.co
+#
+# Compression steps done by this program:
+#
+# 1. It strips symbols from all 4 Minix 1.5.10 kernel components (kernel, mm, fs and init).
+# 2. It concatenates the 4 components, and prepends a DOS MZ .exe header. (As
+#    a side effect, this removes components menu and db (debugger)).
+# 3. It runs aPACK 1.00 (apack1p) to compress the DOS MZ .exe using LZSS compression.
+# 4. It prepares a bootblok with print-and-reboot code the correct .menu_cs field value.
+# 5. It removes the DOS MZ .exe header from the beginning, and it prepends
+#    the prepared bootblok.
+#
+# Use mbr_bootlace.nasm (compiled with -DMINIX) to boot the compressed Minix
+# kernel image output. ShoeLace is't able boot it. It's not possible to boot
+# it by writing it to a floppy and booting from floppy.
+#
+# The apack1p port of aPACK 1.00 is used, so compression needs a Linux i386
+# or amd64 system (or approriate emulation in Docker, WSL etc.).
+#
+# If you want only the symbols to be stripped (no compression), run this
+# program with the `--strip` flag: `perl -x compress_minix_kernel_image.pl
+# --strip minix minix.stripped`. This will keep the components menu and db,
+# and all of mbr_bootlace.nasm, ShoeLace and direct floppy boot will also
+# work.
 #
 
 BEGIN { $ENV{LC_ALL} = "C" }  # For deterministic output. Typically not needed. Is it too late for Perl?
