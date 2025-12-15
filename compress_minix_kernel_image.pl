@@ -4,14 +4,12 @@ eval 'PERL_BADLANG=x;export PERL_BADLANG;exec perl -x "$0" "$@";exit 1'
 +0 if 0;eval("\n\n\n\n".<<'__END__');die$@if$@;__END__
 
 #
-# compress_minix_kernel_image.pl: compress a Minix 1.5.10 i86 or i386 kernel image using aPACK
+# compress_minix_kernel_image.pl: strip and/or compress (using aPACK) a Minix 1.5.10 i86 or i386 kernel image
 # by pts@fazekas.hu at Sun Dec 14 02:07:20 CET 2025
 #
-# Typical size reduction for Minix 1.5.10 i86  kernel image: 171520 --> 48384 bytes.
-# Typical size reduction for Minix 1.5.10 i386 kernel image: 507392 --> 43264 bytes.
+# Typical size reduction for Minix 1.5.10 i86  kernel image --compress: 171520 --> 42176 bytes.
+# Typical size reduction for Minix 1.5.10 i386 kernel image --compress: 507392 --> 43264 bytes.
 # Most of the size reduction is because of the lots of consecutive NUL bytes in .bss section.
-#
-# !! Also strip symbols before compression. (That's complicated, but doable.)
 #
 
 BEGIN { $ENV{LC_ALL} = "C" }  # For deterministic output. Typically not needed. Is it too late for Perl?
@@ -50,46 +48,159 @@ sub write_file($$) {
 
 # ---
 
-my $apack1p_prog = undef;
-if (@ARGV and $ARGV[0] =~ m@^--apack1p=(.*)@s) { shift(@ARGV); $apack1p_prog = $1 }
-die("Usage: $0 <minix> [<minix.co>]\n") if @ARGV != 1 and @ARGV != 2;
+sub get_syms_size($$$$$) {
+  my($name, $is_i386, $text_a256, $data_a256, $s) = @_;
+  #die("fatal: assert bad size of s\n") if length($s) != 28;
+  return (0, 0) if length($s) < 28;
+  my($opcode, $delta, $syms_ofs, $sr) = unpack("CCvZ24", $s);
+  return (0, 0) if !($opcode == 0xeb and ($name eq "kernel" ? ($delta == 4) : ($delta == 0x1a and !length($sr))) and $syms_ofs > 0);
+  $syms_ofs <<= 8 if $is_i386 or $syms_ofs <= 0xff;  # Minix 1.5 kernels other than in http://download.minix3.org/previous-versions/Intel-1.5/
+  return (0, 0) if $syms_ofs & 0xf or $syms_ofs > ($data_a256 << 8);
+  (($data_a256 << 4) - ($syms_ofs >> 4), 1)
+}
 
-my $ufn = $ARGV[0];
-my $cfn = defined($ARGV[1]) ? $ARGV[1] : $ufn;
+# ---
+
+my $ufn;
+my $cfn;
+my $apack1p_prog;
+my $do_strip;
+my $do_compress;
+die("Usage: $0 [<flag>...] <minix> [<minix.co>]\n") if !@ARGV or $ARGV[0] eq "--help";
+{ my $i;
+  for ($i = 0; $i < @ARGV; ++$i) {
+    my $arg = $ARGV[$i];
+    if ($arg eq "--") { ++$i; last }
+    elsif ($arg eq "-" or $arg !~ m@^-@) { last }
+    elsif ($arg =~ s@^--apack1p=@@) { $apack1p_prog = $arg }
+    elsif ($arg eq "--info") { $do_strip = $do_compress = 0 }  # Just print file info, don't change the Minix kernel image file.
+    elsif ($arg eq    "--strip") { $do_strip = 1 }  # Strip symbols.
+    elsif ($arg eq "--no-strip") { $do_strip = 0 }
+    elsif ($arg eq    "--compress") { $do_compress = 1 }  # Strip symbols.
+    elsif ($arg eq "--no-compress") { $do_compress = 0 }
+    else { die("fatal: unknown command-line flag: $arg\n") }
+  }
+  if (!defined($ufn)) {
+    die("fatal: missing <minix> argument\n") if $i >= @ARGV;
+    $ufn = $ARGV[$i++];
+  }
+  $cfn = $ARGV[$i++] if !defined($cfn) and $i < @ARGV;
+  die("fatal: too many command-line arguments\n") if $i < @ARGV;
+}
+$do_compress = (defined($do_strip) and $do_strip) ? 0 : 1 if !defined($do_compress);  # Default action.
+$do_strip = 1 if !defined($do_strip) and $do_compress;
+$cfn = $ufn if !defined($cfn);
+die("fatal: --compress conflicts with --no-strip\n") if $do_compress and defined($do_strip) and !$do_strip;
 
 $_ = read_file($ufn);
 printf(STDERR "info: read Minix kernel image: %s (%u bytes)\n", $ufn, length($_));
-die("fatal: kernel image file too short\n") if length($_) < 0x220;
+die("fatal: kernel image file too short: $ufn\n") if length($_) < 0x220;
 my $bootblok = substr($_, 0, 0x200);
 substr($_, 0, 0x200) = "";
-die("fatal: bad kernel code start\n") if !m@^\xeb\x04 .. (..) \xfa \xfc \x2e\x8b\x16\x04\x00 \x8e\xda \x8e\xc2 \x8e\xd2 \xbc@sx;
+die("fatal: bad kernel code start: $ufn\n") if !m@^\xeb\x04 .. (..) \xfa \xfc \x2e\x8b\x16\x04\x00 \x8e\xda \x8e\xc2 \x8e\xd2 \xbc@sx;
 my $kernel_ds = unpack("v", $1);
-die("fatal: bad kernel_ds\n") if $kernel_ds <= 0x60 or $kernel_ds >= 0x60 + (length($_) >> 4);
+die("fatal: bad kernel_ds: $ufn\n") if $kernel_ds <= 0x60 or $kernel_ds >= 0x60 + (length($_) >> 4);
 my($kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256) = unpack("v8", substr($_, ($kernel_ds - 0x60) << 4, 0x10));
-die("fatal: bad mm code start\n") if substr($_, ($kernel_text_a256 + $kernel_data_a256) << 8, 0x30) !~ m@^\xeb\x1a .{26} \x8b(?:(\x25)..\0\0 \xe8..\0\0 | \x26.. \xe8..)@sx;
+die("fatal: bad mm code start: $ufn\n") if substr($_, ($kernel_text_a256 + $kernel_data_a256) << 8, 0x30) !~ m@^\xeb\x1a .{26} \x8b(?:(\x25)..\0\0 \xe8..\0\0 | \x26.. \xe8..)@sx;
 my $is_mm_i386 = defined($1) ? 1 : 0;  # Not checking kernel text, because it always starts with 8086 (16-bit) code.
 my $arch = ($is_mm_i386) ? "i386" : "i86";
 my @xflag = ($arch eq "i86") ? ("-x") : ();
 
 # * DS:BP+0x1f6: dw final, menu_ds, menu_pc, menu_cs, bootsig
 # * DS:BP+0x1f6: dw ?      final,   menu_ds, menu_pc, menu_cs
-my($menu_cs, $boot_signature) = unpack("vv", substr($bootblok, 0x1fc, 4));
-$menu_cs = $boot_signature if $boot_signature != 0xaa55;
+# $final is (filesize + 0x1ff) >> 9) - 1. The 1 is because of the bootblok.
+my($db_ds, $db_pc, $db_cs, $final, $menu_ds, $menu_pc, $menu_cs) = unpack("v7", substr($bootblok, ((substr($bootblok, 0x1fe, 2) eq "\x55\xaa") ? 0x1f0 : 0x1f2), 7 << 1));
 my $size = ($menu_cs - 0x60) << 4;
-die("fatal: kernel image file too short\n") if length($_) < $size;
+die("fatal: kernel image file too short: $ufn\n") if length($_) < $size;
+my $expected_final = (length($_) + 0x1ff) >> 9;
+die("fatal: bad final: expected=$expected_final got=$final: $ufn\n") if $final != $expected_final and $final != $expected_final + 1;  # +1 for the original Minix 1.5.10 i86 kernel image.
+my $menu_etc = substr($_, $size);  # menu and db (debugger).
 substr($_, $size) = "";
+
+my $mm_ofs256 = $kernel_text_a256 + $kernel_data_a256;
+my $fs_ofs256 = $mm_ofs256 + $mm_text_a256 + $mm_data_a256;
+my $init_ofs256 = $fs_ofs256 + $fs_text_a256 + $fs_data_a256;
+my($kernel_syms_para, $ok_kernel) = get_syms_size("kernel", $is_mm_i386, $kernel_text_a256, $kernel_data_a256, substr($_, 0, 28));
+my($mm_syms_para,     $ok_mm)     = get_syms_size("mm",     $is_mm_i386, $mm_text_a256,     $mm_data_a256,     substr($_, $mm_ofs256 << 8,   28));
+my($fs_syms_para,     $ok_fs)     = get_syms_size("fs",     $is_mm_i386, $fs_text_a256,     $fs_data_a256,     substr($_, $fs_ofs256 << 8,   0x30));
+my($init_syms_para,   $ok_init)   = get_syms_size("init",   $is_mm_i386, $init_text_a256,   $init_data_a256,   substr($_, $init_ofs256 << 8, 28));
+my $kernel_size_para = (length($_) + 0xf) >> 4;
+my $kernel_sum_size_para = ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256 + $fs_data_a256 + $init_text_a256 + $init_data_a256) << 4;
+my $fs_data_ofs = ($fs_ofs256 + $fs_text_a256) << 8;
+sub print_and_check_sizes($) {
+  my $msg = $_[0];
+  printf(STDERR "info: ${msg}Minix kernel kernel_acs=0x%x kernel_ds=0x%x size_4=0x%x0=%u sum_size_4=0x%x0 menu_etc_size=0x%x kernel_para=0x%x+0x%x+0x%x mm_para=0x%x+0x%x+0x%x fs_para=0x%x+0x%x+0x%x init_para=0x%x+0x%x+0x%x size=%u%s\n",
+      0x60, $kernel_ds, $kernel_size_para, $kernel_size_para << 4, $kernel_sum_size_para, length($menu_etc),
+      $kernel_text_a256 << 4, ($kernel_data_a256 << 4) - $kernel_syms_para, $kernel_syms_para,
+      $mm_text_a256     << 4, ($mm_data_a256     << 4) - $mm_syms_para,     $mm_syms_para,
+      $fs_text_a256     << 4, ($fs_data_a256     << 4) - $fs_syms_para,   , $fs_syms_para,
+      $init_text_a256   << 4, ($init_data_a256   << 4) - $init_syms_para,   $init_syms_para,
+      length($bootblok) + length($_) + length($menu_etc), length($msg) ? "" : " f=$ufn");
+  die("fatal: bad size: $ufn\n") if $size != length($_);
+  die("fatal: inconsistent Minix kernel_text_a and kernel_ds: $ufn\n") if 0x60 + ($kernel_text_a256 << 4) != $kernel_ds;
+  die("fatal: inconsistent Minix kernel size and sum_size: $ufn\n") if $kernel_size_para != $kernel_sum_size_para;
+  die("fatal: bad kernel text start: $ufn\n") if !$ok_kernel;
+  die("fatal: bad mm text start: $ufn\n") if !$ok_mm;
+  die("fatal: bad fs text start: $ufn\n") if !$ok_fs;
+  die("fatal: bad init text start: $ufn\n") if !$ok_init;
+  die("fatal: bad init offset in fs: $ufn\n") if unpack("v", substr($_, $fs_data_ofs + 4, 2)) != $init_ofs256 + 6;  # This is patch3() in build.c.
+  die("fatal: bad init data size in fs: $ufn\n") if unpack("v", substr($_, $fs_data_ofs + 8, 2)) != $init_data_a256;  # This is patch3() in build.c.
+}
+print_and_check_sizes("");
+
+if ($do_strip) {
+  my $stripped_kernel_size = (($kernel_text_a256 + $kernel_data_a256) << 8) - ($kernel_syms_para << 4);
+  my $stripped_mm_size = (($mm_text_a256 + $mm_data_a256) << 8) - ($mm_syms_para << 4);
+  my $stripped_fs_size = (($fs_text_a256 + $fs_data_a256) << 8) - ($fs_syms_para << 4);
+  my $stripped_init_size = (($init_text_a256 + $init_data_a256) << 8) - ($init_syms_para << 4);
+  $_ = join("", substr($_, 0, $stripped_kernel_size), "\0" x (-$stripped_kernel_size & 0xff),
+                substr($_, $mm_ofs256 << 8, $stripped_mm_size), "\0" x (-$stripped_mm_size & 0xff),
+                substr($_, $fs_ofs256 << 8, $stripped_fs_size), "\0" x (-$stripped_fs_size & 0xff),
+                substr($_, $init_ofs256 << 8, $stripped_init_size), "\0" x (-$stripped_init_size & 0xff));
+  $mm_ofs256 = $kernel_text_a256 + ($kernel_data_a256 = (($stripped_kernel_size + 0xff) >> 8) - $kernel_text_a256);
+  $fs_ofs256 = $mm_ofs256 + $mm_text_a256 + ($mm_data_a256 = (($stripped_mm_size + 0xff) >> 8) - $mm_text_a256);
+  $init_ofs256 = $fs_ofs256 + $fs_text_a256 + ($fs_data_a256 = (($stripped_fs_size + 0xff) >> 8) - $fs_text_a256);
+  $init_data_a256 = (($stripped_init_size + 0xff) >> 8) - $init_text_a256;
+  # die(sprintf("fs \@0x%x; fs.data \@0x%x; init \@0x%x", $fs_ofs256 << 8, ($fs_ofs256 + $fs_text_a256) << 8, $init_ofs256 << 8));
+  $menu_cs -= ($size - length($_)) >> 4;
+  $menu_ds -= ($size - length($_)) >> 4;
+  $db_cs -= ($size - length($_)) >> 4 if $db_cs;
+  $db_ds -= ($size - length($_)) >> 4 if $db_ds;
+  $final = (length($_) + length($menu_etc) + 0x1ff) >> 9;
+  substr($bootblok, ((substr($bootblok, 0x1fe, 2) eq "\x55\xaa") ? 0x1f0 : 0x1f2), 7 << 1) = pack("v7", $db_ds, $db_pc, $db_cs, $final, $menu_ds, $menu_pc, $menu_cs);
+  substr($_, ($kernel_ds - 0x60) << 4, 0x10) = pack("v8", $kernel_text_a256, $kernel_data_a256, $mm_text_a256, $mm_data_a256, $fs_text_a256, $fs_data_a256, $init_text_a256, $init_data_a256);
+  $fs_data_ofs = ($fs_ofs256 + $fs_text_a256) << 8;
+  substr($_, $fs_data_ofs + 4, 2) = pack("v", $init_ofs256 + 6);   # This is patch3() in build.c.
+  substr($_, $fs_data_ofs + 8, 2) = pack("v", $init_data_a256);   # This is patch3() in build.c.
+  $kernel_size_para = (length($_) + 0xf) >> 4;
+  $kernel_sum_size_para = ($kernel_text_a256 + $kernel_data_a256 + $mm_text_a256 + $mm_data_a256 + $fs_text_a256 + $fs_data_a256 + $init_text_a256 + $init_data_a256) << 4;
+  $size = length($_);
+  $kernel_syms_para = $mm_syms_para = $fs_syms_para = $init_syms_para = 0;
+  print_and_check_sizes("stripped ");
+  # write_file("$ufn.strip", $bootblok . $_ . $menu_etc);
+}
+if (!$do_compress) {
+  if ($do_strip or $cfn ne $ufn) {
+    substr($_, 0, 0) = $bootblok;
+    $_ = $menu_etc;
+    my $msg = $do_strip ? "stripped" : "uncompressed";
+    printf(STDERR "info: writing $msg Minix kernel image: %s (%u bytes)\n", $cfn, length($_));
+    write_file($cfn, $_);
+  }
+  exit(0);
+}
+
 my $hdrsize = 2; my $xsize = ($hdrsize << 4) + $size; my $lastsize = $xsize & 0x1ff; my $nblocks  = ($xsize + 0x1ff) >> 9;
 my $nreloc = 0; my $minalloc = 0xffff; my $maxalloc = 0xffff; my $ss = 0; my $sp = 0x200; my $checksum = 0; my $ip = 0; my $cs = 0; my $relocpos = 0; my $noverlay = 0;
 substr($_, 0, 0) = pack("a2v13x4", "MZ", $lastsize, $nblocks, $nreloc, $hdrsize, $minalloc, $maxalloc, $ss, $sp, $checksum, $ip, $cs, $relocpos, $noverlay);  # x4 assumes $hdrsize == 2.
-
 write_file($cfn, $_);
 if (!defined($apack1p_prog) or !length($apack1p_prog)) {
   my $mydir = $0;
   $mydir = "." if $mydir !~ s@/+[^/]+\Z(?!\n)@@;
   $apack1p_prog = "$mydir/tools/apack1p-1.00.upx";
 }
-my @apack1p_cmd = ($apack1p_prog, "-q", "-q", "-h", "-t", "-1", @xflag, $cfn, $cfn);
-print(STDERR "info: running apack1p: ", join(" ", map { shq($_) } @apack1p_cmd), "\n");
+my @apack1p_cmd = ($apack1p_prog, "-q", "-q", "-h", "-t", "-1", @xflag, fnargq($cfn), fnargq($cfn));
+print(STDERR "info: running apack1p: ", join(" ", map { shq($_) } @apack1p_cmd), "\n");  # This also prints an extra error to STDERR if @apack1_cmd[0] doesn't exist.
 die("fatal: apack1p ($apack1p_prog) failed\n") if system(@apack1p_cmd);
 
 $_ = read_file($cfn);
