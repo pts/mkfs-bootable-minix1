@@ -346,7 +346,7 @@ write_block(1, $super_data);  # Write superblock.
 write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $uid, 0x20, $mtime, $gid, 2, $firstdatablock));  # Write rootdir (/) inode.
 write_block($firstreservedblock, $reserved_data) if defined($reserved_data);  # Write data to the reserved area.
 write_block($firstdatablock, pack("va14va14", 1, ".", 1, ".."));  # Write rootdir (/) entries: "." and "..".
-# TODO(pts): Add an option to write extra NUL bytes: boot block, end of superbloc, end of rootdir inode block, end of rootdir entries block.
+# TODO(pts): Add an option to write extra NUL bytes: boot block, end of superblock, end of rootdir inode block, end of rootdir entries block.
 
 if ($do_add_vhd_footer) {  # Add a Virtual PC .vhd footer to make it easy to use the image file in VirtualBox.
   # In QEMU, it will keep working as either `-drive file=hd.img,format=bin'
