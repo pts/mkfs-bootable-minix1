@@ -14,9 +14,10 @@
 ; * /usr/oz/shoelace/shoeboot.c (1990-04-24)
 ;
 ; This boot code can boot Minix >=1.6 (both i86 and i386) from a HDD which
-; doesn't have partitions, but the minix1 filesystem (with s_magic is created to span over
-; the entire HDD (i.e. /dev/hd0). It can't boot from a minix2 filesystem
-; (introduced in Minix 1.6, boot floppies already use it).
+; doesn't have partitions, but the Minix v1 filesystem (with s_magic is
+; created to span over the entire HDD (i.e. /dev/hd0). It can't boot from a
+; minix v2 filesystem (introduced in Minix 1.6, boot floppies already use
+; it).
 ;
 ; Here is how you should prepare such a bootable filesystem image for
 ; mbr_bootminix.bin:
@@ -37,7 +38,7 @@
 ; Here is how you should prepare such a bootable filesystem image for
 ; mbe_bootlace.bin:
 ;
-; 1. Create the minix1 filesystem.
+; 1. Create the Minix v1 filesystem.
 ; 2. Copy the file named shoelace of the ShoeLace bootloader to the root
 ;    directory of the fileystem.
 ; 3. If you have a Minix kernel image, then extract the 4 component files
@@ -140,8 +141,6 @@
 
 bits 16
 cpu 8086
-
-DENTRY_SIZE equ 0x10  ; !! Add support for DENTRY_SIZE equ 0x20.
 
 ; Minix 1.5 device numbers. The DEV_HD* ones have changed (exceptfor DEV_HD0) in Minix 1.6.
 DEV_FD0 equ 0x200  ; GRUB (fd0): First floppy.
@@ -567,8 +566,9 @@ _checkfilesize:
 ; #define NR_ZONE_NUMS 9  /* # zone numbers in an inode */
 ; #define SUPER_BLOCK 1
 ; #define ROOT_INODE 1
-; #define SUPER_MAGIC 0x137f  /* Value for s_magic in minix1 */
-; #define UNSUPPORTED_SUPER_MAGIC_V2 0x2468  /* Value for s_magic in minix2. */
+; #define SUPER_MAGIC 0x137f  /* Value for s_magic in Minix v1 with namelength==14 */
+; #define SUPER_MAGIC_30 0x138f  /* Value for s_magic in Minix v1 with namelength==30 */
+; #define UNSUPPORTED_SUPER_MAGIC_V2 0x2468  /* Value for s_magic in minix v2. */
 ; struct super_block {  /* At start of block SUPER_BLOCK. */
 ;   ino_t s_ninodes;              /* # usable inodes on the minor device */
 ;   zone_nr s_nzones;             /* total device size, including bit maps etc */
@@ -1006,7 +1006,8 @@ _procdir.in:
 		jmp short .found  ; return thisnode;
 .not_this_dentry:
 		xor di, di
-		mov al, DENTRY_SIZE
+.dentry_size: equ $+1
+		mov al, 0x20  ; Affected by self-modifying code: the value will be modified to 0x10 for filesystem created with `mkfs.minix -n 14' (`mkfs.minix --namelength=30') (default), and kept as 0x20 for `mkfs.minix -n 30'.
 		add bx, ax  ; sizeof(dir_struct).
 		sub [_filesize], ax  ; sizeof(dir_struct).
 		sbb [_filesize+2], di  ; DI == 0.
@@ -1124,7 +1125,7 @@ _loadandrunimage:
 		inc ax  ; BP := 1.
 		push ax  ; 1. Low word of SUPER_BLOCK. Argument 1 of _readblock below.
 		call _readblock
-		;  !! Add support for minix2 filesystem.
+		;  !! Add support for minix v2 filesystem.
 		add sp, byte +0x6
 		mov cx, [si+0xa]  ; s_log_zone_size. Typically it's 0. 0 means: 1 zone == 1 block == 1 KiB. 5 means: 1 zone == (1<<5) blocks == 32 KiB.
 		mov ax, 1
@@ -1133,6 +1134,10 @@ _loadandrunimage:
 		mov bp, [si+4]
 		times 2 inc bp
 		add bp, [si+6]  ; Set BP (inodeblock) to its final value.
+		mov al, [si+16]  ; Check the s_magic field in the superblock.
+		and al, 0x10  ; AL := 0x10 for 0x137f (namelength==14). AL := 0 for 0x138f (namelength==30).
+		sub [_procdir.in.dentry_size], al  ; Self-modifying code: set .procdir_in.dentry size based on s_magic value in the superblock (0x137f means Minix v1 filesystem with namelength==14, set to 0x10, 0x138f means Minix v1 filesystem with namelength==30, set to 0x20).
+.dentry_size_ok:
 		xor ax, ax  ; AX (node) := ROOT_INODE - 1 == 0.
 		call .process_inode  ; ROOT_INODE (/): AX == ROOT_INODE - 1.
 		sub ax, strict word 1  ; Sets AX -= 1, and also updates the files with respect to `cmp ax, strict word 1'.
