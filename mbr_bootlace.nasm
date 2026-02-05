@@ -141,6 +141,8 @@
 bits 16
 cpu 8086
 
+DENTRY_SIZE equ 0x10  ; !! Add support for DENTRY_SIZE equ 0x20.
+
 ; Minix 1.5 device numbers. The DEV_HD* ones have changed (exceptfor DEV_HD0) in Minix 1.6.
 DEV_FD0 equ 0x200  ; GRUB (fd0): First floppy.
 DEV_HD0 equ 0x300  ; GRUB (hd0): Start of first hard disk.
@@ -543,12 +545,12 @@ cret:
 ; This function also sets the FLAGS based on `or ax, ax', where
 ; AX is is the result.
 ;
-; This function doesn't modify any other register than AX or FLAGS.
+; This function doesn't modify any other register than FLAGS or AX.
 _checkfilesize:
 		mov ax, [_filesize]  ; low order filesize
 		or al, ah  ; combine bytewise
 		xor ah, ah  ; knock out high byte
-		or ax, [_filesize+2]  ; combine ms word
+		or ax, [_filesize+2]  ; combine most signigicant word
 		ret
 
 ; Code in /usr/oz/shoelace/shoeasm.x ends here.
@@ -700,12 +702,12 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
 		call _procdir_or_procimagefile  ; (*fn)(tb). The argument `fn' of _procdir_or_procimagefile is passed implicitly via self-modifying code in the body of _procdir_or_procimagefile.
 		pop cx  ; Restore CX (i).
 		test ax, ax
-		jnz short .6
+		jnz short .done
 		loop .2  ; CX -= 1. Jump iff the new CX is 0.
 		pop bx  ; Restore BX (zp).
 		dec word [bp+0x8-2]
 		jnz short .1
-.6:
+.done:
 		pop bx  ; Restore for the caller.
 		jmp strict short dsret
 
@@ -915,11 +917,10 @@ _bufptr_ofs: equ $-2
 		shr di, 1
 		rep movsb  ; Copy sizeof(*bufp)-hsize bytes from bufp to the image output buffer (_bufptr).
 		mov [_bufptr_ofs], di
-		sub byte [_filesize+1], 0x400>>8  ; sizeof(buffer_t) == 0x400.
-		sbb word [_filesize+2], cx  ; CX is 0 now.
 		xor si, si
-		call _checkfilesize
-		;or ax, ax  ; Not needed, _checkfilesize has set the FLAGS.
+		sub byte [_filesize+1], 0x400>>8  ; sizeof(buffer_t) == 0x400.
+		sbb [_filesize+2], cx  ; CX is 0 now.
+		call _checkfilesize  ; Sets FLAGS, ruins AX.
 		jg short .2
 		times 2 inc si  ; SI := 2*ROOT_INODE.
 .2:
@@ -946,11 +947,13 @@ _bufptr_ofs: equ $-2
 ;  * in the NUL-terminated string imgname. It will be called with the root
 ;  * directory (/) only.
 ;  *
-;  * Returns the inode number of the imgname as soon is at has been found;
-;  * otherwise ROOT_INODE (== 1) if the end-of-directory has been reached
-;  * without finding imgname; otherwise 0. Please note that 0 is an invalid
-;  * inode number. 0 means that the caller should continue reading the next
-;  * block, and call again.
+;  * Returns the inode number of the imgname as soon is at has been found in
+;  * this block; otherwise ROOT_INODE (== 1) if the end-of-directory has
+;  * been reached without finding imgname; otherwise 0 indicating that
+;  * end-of-block (but not the end-of-directory yet) has been reached
+;  * without finding imgname. Please note that 0 is an invalid inode number.
+;  * 0 means that the caller should continue reading the next block, and
+;  * call again.
 ;  *
 ;  * There is potential for ambiguity since a return value of ROOT_INODE
 ;  * could mean that a the root directory has been found or that the
@@ -972,9 +975,9 @@ _bufptr_ofs: equ $-2
 ;       }
 ;     }
 ;     filesize -= sizeof(dir_struct);
-;     if (checkfilesize() <= 0) return ROOT_INODE;
+;     if (checkfilesize() <= 0) return ROOT_INODE;  /* Indicating not found in the current directory. */
 ;   }
-;   return 0;
+;   return 0;  /* Indicating not found in the current block. */
 ; }
 ;
 ; The argument `bufp' is passed in register BX.
@@ -982,37 +985,40 @@ _procdir_or_procimagefile:
 		push si
 		push di
 .or_opcode_byte:
-		test ax, strict word _procimagefile.in-($+3)  ; Self-modifying code: to change the function pointer fn to _procimagefile, this opcode byte will be modified from this harmless `test ax, ...' (0xa9) to `jmp strict near' (0xe9).
+		test ax, strict word _procimagefile.in-($+3)  ; Affected by self-modifying code: to change the function pointer fn to _procimagefile, this opcode byte will be modified from this harmless `test ax, ...' (0xa9) to `jmp strict near' (0xe9).
 _procdir.in:
 		lea cx, [bx+0x400]  ; CX will keep holding edp.
 		push ds
-		pop es  ; For the `cmpsb' below.
-.1:
-		xor ax, ax  ; Function return value.
-		cmp cx, bx
-		jna short .6
-		mov ax, [bx]  ; thisnode. This will also be the function return value.
-		test ax, ax
-		jz short .3
+		pop es  ; For the `scasw', `cmpsb' and `scasb' below.
+		xor ax, ax  ; Function return value. By default it's 0.
+.next_entry:
+		mov di, bx
+		scasw  ; Also skips over d_num, setting DI (ep) := ((dir_struct*)bufp)->d_name. Uses AX == 0.
+		je short .not_this_dentry  ; Jump iff ((dir_struct*)bufp)->d_inum) == 0, i.e. if it's a deleted directory entry.
 		mov si, _imgname1+1  ; +1 to skip over the leading `/'.
-		lea di, [bx+2]  ; Skip over d_inum.
-.2:
+.next_char:
 		cmpsb
-		jne short .3
-		cmp byte [di-1], 0x0
-		jne short .2
-		jmp short .6  ; Return the value of [bx].
-.3:
-		sub word [_filesize], byte 0x10
-		sbb word [_filesize+2], byte 0
-		call _checkfilesize  ; It doesn't modify ES, CX or DX.
-		;or ax, ax  ; Not needed, _checkfilesize has set the FLAGS.
-		jng short .4
-		add bx, byte 0x10  ; sizeof(dir_struct).
-		jmp short .1
-.4:
-		mov ax, 1  ; ROOT_INODE.
-.6:
+		jne short .not_this_dentry
+		dec di
+		scasb  ; Uses AL == 0. Uses AX == 0.
+		jne short .next_char
+		mov ax, [bx]  ; thisnode. This will also be the function return value.
+		jmp short .found  ; return thisnode;
+.not_this_dentry:
+		xor di, di
+		mov al, DENTRY_SIZE
+		add bx, ax  ; sizeof(dir_struct).
+		sub [_filesize], ax  ; sizeof(dir_struct).
+		sbb [_filesize+2], di  ; DI == 0.
+		call _checkfilesize  ; Sets FLAGS, ruins AX. !! Replace it with: `mov ax, DENTRY_SIZE' ++ `call _subfilesize'.
+		xchg ax, di  ; AX := 0; DI := junk.
+		jle short .not_found  ; if (checkfilesize() <= 0) return ROOT_INODE;
+		cmp bx, cx
+		jb short .next_entry  ; If not jumping: return 00;
+		dec ax  ; return 0;
+.not_found:
+		inc ax
+.found:
 		pop di  ; Restore.
 		pop si  ; Restore.
 		ret
