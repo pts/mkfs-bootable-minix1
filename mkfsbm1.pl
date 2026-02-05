@@ -335,7 +335,8 @@ if ($device_size < $size or ($do_force_size and $device_size != $size)) {
 }
 write_block(0, $boot_data) if defined($boot_data);  # Write boot block.
 my $magic = ($namelength == 30) ? 0x138f : 0x137f;
-substr($super_data, 0, 0x12) = pack("v6Vv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstdatablock, 0, 0x10081c00, $magic);
+my $state = 1;  # Bitset for Linux: MINIX_VALID_FS == 1, MINIX_ERROR_FS == 2.
+substr($super_data, 0, 0x12) = pack("v6Vvv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstdatablock, 0, 0x10081c00, $magic, $state);
 write_block(1, $super_data);  # Write superblock.
 { my $inodei = $inodec + 1;
   my $inodec18 = $inodei + (-$inodei & 7);
