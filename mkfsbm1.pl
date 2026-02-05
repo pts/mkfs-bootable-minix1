@@ -41,6 +41,12 @@ sub parse_uint($) {
   $v
 }
 
+sub parse_namelength($) {
+  my $v = parse_uint($_[0]);
+  die("fatal: bad namelength: $v\n") if $v != 14 and $v != 30;
+  $v
+}
+
 sub parse_int32($) {
   my $int32 = $_[0];
   return -0x7fffffff - 1 if $int32 =~ m@^-(?:0+20000000000|0[xX]0*80000000|2147483648)\Z(?!\n)@;  # Avoid overflows and underflows.
@@ -118,6 +124,7 @@ my $boot_fn;
 my $super_fn;
 my $kernel_fn;
 my $inodec;
+my $namelength = 14;  # Please note that Minix <=2.0.4 supports only $namelength == 14. Linux 1.0.4 supports $namelength == 30.
 die("Usage: $0 [<flag>...] <device> [<byte-size>]\n") if !@ARGV or $ARGV[0] eq "--help";
 { my $i;
   for ($i = 0; $i < @ARGV; ++$i) {
@@ -130,6 +137,8 @@ die("Usage: $0 [<flag>...] <device> [<byte-size>]\n") if !@ARGV or $ARGV[0] eq "
     elsif ($arg =~ s@^--reserved=@@) { $reserved_size = parse_size($arg) }
     elsif ($arg =~ s@^--inodes=max@@) { $inodec = 0xfffe }
     elsif ($arg =~ s@^--inodes=@@) { $inodec = parse_uint($arg) }
+    elsif ($arg =~ s@^--namelength=@@) { $namelength = parse_namelength($arg) }  # Flag compatible with mkfs.minix(1).
+    elsif (($arg eq "-n" or $arg eq "--namelength") and $i < $#ARGV) { $namelength = parse_namelength($ARGV[++$i]) }  # Flag compatible with mkfs.minix(1).
     elsif ($arg =~ s@^--uid=@@) { $uid = parse_uint($arg) }  # User ID.
     elsif ($arg =~ s@^--gid=@@) { $gid = parse_uint($arg) }  # Group ID.
     elsif ($arg =~ s@^--mtime=@@) { $mtime = parse_int32($arg) }  # Group ID.
@@ -325,7 +334,8 @@ if ($device_size < $size or ($do_force_size and $device_size != $size)) {
   die("fatal: error changing device size: $device_fn\n") if !truncate(F, $size);
 }
 write_block(0, $boot_data) if defined($boot_data);  # Write boot block.
-substr($super_data, 0, 0x12) = pack("v6Vv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstdatablock, 0, 0x10081c00, 0x137f);
+my $magic = ($namelength == 30) ? 0x138f : 0x137f;
+substr($super_data, 0, 0x12) = pack("v6Vv", $inodec, $blockc, $imapblockc, $zmapblockc, $firstdatablock, 0, 0x10081c00, $magic);
 write_block(1, $super_data);  # Write superblock.
 { my $inodei = $inodec + 1;
   my $inodec18 = $inodei + (-$inodei & 7);
@@ -343,9 +353,10 @@ write_block(1, $super_data);  # Write superblock.
   substr($zmap_data, $blockc18 >> 3) = "\xff" x ((($zmapblockc << 13) - $blockc18) >> 3);
   write_block(2 + $imapblockc, $zmap_data);  # TODO(pts): Write fewer NULs to sparse file.
 }
-write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $uid, 0x20, $mtime, $gid, 2, $firstdatablock));  # Write rootdir (/) inode.
+my $dir_data = pack(scalar(("va" . $namelength) x 2), 1, ".", 1, "..");
+write_block(2 + $imapblockc + $zmapblockc, pack("vvVVCCv", 040777, $uid, length($dir_data), $mtime, $gid, 2, $firstdatablock));  # Write rootdir (/) inode.
 write_block($firstreservedblock, $reserved_data) if defined($reserved_data);  # Write data to the reserved area.
-write_block($firstdatablock, pack("va14va14", 1, ".", 1, ".."));  # Write rootdir (/) entries: "." and "..".
+write_block($firstdatablock, $dir_data);  # Write rootdir (/) entries: "." and "..".
 # TODO(pts): Add an option to write extra NUL bytes: boot block, end of superblock, end of rootdir inode block, end of rootdir entries block.
 
 if ($do_add_vhd_footer) {  # Add a Virtual PC .vhd footer to make it easy to use the image file in VirtualBox.
