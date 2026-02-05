@@ -2,9 +2,10 @@
 ; mbr_bootlace.nasm: Minix 1.5 bootlace boot code that can be put to a HDD MBR
 ; MBR-specific code and size optimizations by pts@fazekas.hu at Fri Oct 24 19:14:53 CEST 2025
 ;
-; Compile for /shoelace  with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSHOELACE -o mbr_bootlace.bin  mbr_bootlace.nasm
-; Compile for /minix 1.5 with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMINIX    -o mbr_bootminix.bin mbr_bootlace.nasm
-; Compile for /boot      with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DBOOT     -o mbr_bootboot.bin  mbr_bootlace.nasm
+; Compile for /shoelace    with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSHOELACE -o mbr_bootlace.bin    mbr_bootlace.nasm
+; Compile for /minix 1.5   with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMINIX    -o mbr_bootminix.bin   mbr_bootlace.nasm
+; Compile for /boot        with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DBOOT     -o mbr_bootboot.bin    mbr_bootlace.nasm
+; Compile for /vmlinuz 1.0 with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DLINUX10  -o mbr_bootlinux10.bin mbr_bootlace.nasm
 ;
 ; Based on the following Minix 1.5 source files:
 ;
@@ -115,9 +116,14 @@
   %define MINIX 0
 %endif
 %ifdef BOOT
-  %define BOOT 1  ; This can boot a Minix 1.7.0 boot monitor in /boot. !! Maybe it works with 1.6 and 2.0 as well.
+  %define BOOT 1  ; This can boot a Minix 1.6.25--1.7.0--2.0.4 boot monitor in /boot.
 %else
   %define BOOT 0
+%endif
+%ifdef LINUX10
+  %define LINUX10 1  ; This can boot a Linux 1.0 (tested with 1.0.4) compressed kernel image in /vmlinuz. It may also work with 2.4.31 or even later, provided that that vmlinuz is at most 514.5 KiB.
+%else
+  %define LINUX10 0
 %endif
 %ifdef SHOELACE
   %define SHOELACE 1  ; This can boot a ShoeLace bootloader (used to boot Minix 1.5) in /shoelace.
@@ -129,10 +135,10 @@
 %ifndef SHOELACE
   %define SHOELACE 0
 %endif
-%if MINIX+SHOELACE+BOOT==0
+%if MINIX+SHOELACE+BOOT+LINUX10==0
   %define SHOELACE 1  ; Default.
 %endif
-%if MINIX+SHOELACE+BOOT>1
+%if MINIX+SHOELACE+BOOT+LINUX10>1
   %error ERRROR_MULTIPLE_BOOT_METHODS_SELECTED
   times -1 nop
 %endif
@@ -202,16 +208,26 @@ NUL equ 0   ; ASCII NUL '\0'.
 ; On entry the following register contents are assumed:
 ;
 ; * DL: BIOS drive number (80h hard disk, 00h floppy disk, etc.)
+;
+; Memory usage:
+;
+; * .text + .rodata + .data: <=0x400 bytes == 1 KiB.
+; * .bss: 0x400 bytes == 1 KiB. It's only the _blockbuf variable.
+; * stack: <=0xe00 bytes == 3.5 KiB. Stack usage is dominated by the
+;   _scanzone function, which allocates a 0x400-byte block on the stack for
+;   each recursive depth. The maximum depth is 3. The stack usage of
+;   everything else is <=0x200 bytes. So the total stack usage is <= 3 *
+;   0x400 + 0x200 == 0xe00 bytes == 3.5 KiB.
 _start:
 _main:
 ; BIOS has put the boot drive number to DL.
+MBR_LOAD_SEG equ 0x7c0  ; The BIOS has loaded our code (from _start) to MBR_LOAD_SEG:0.
 %if SHOELACE
   IMAGE_SEG equ 0x1000  ; We will load the /shoelace image here (at IMAGE_SEG:0).
-  MBR_LOAD_SEG equ 0x7c0  ; The BIOS has loaded our code (from _start) to MBR_LOAD_SEG:0.
 		mov ax, MBR_LOAD_SEG  ; current code segment
-		mov ds, ax  ; data addressable
+		mov ds, ax
 		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
-		mov ss, ax  ; stack addressable
+		mov ss, ax
 		mov sp, -MBR_LOAD_SEG<<4
 		sti
 		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
@@ -239,9 +255,9 @@ _main:
   BOOT_COPY_SEG equ 0x9000
 		xor di, di
 		mov ds, di
-		mov si, 0x7c00  ; The BIOS has loaded a sector starting at _start from the MBR here.
-		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
-		mov sp, [byte si+.boot_copy_seg-_start] ; BOOT_COPY_SEG is also good for SP: 0x9000 bytes of total size (code + data + BSS + stack) is enough for this bootloader.
+		mov si, MBR_LOAD_SEG<<4  ; The BIOS has loaded a sector starting at _start from the MBR here.
+		cli  ; Some broken early 8086 CPUs can process an interrupt after `mov ss, ax'.
+		mov sp, [byte si+.boot_copy_seg-_start] ; BOOT_COPY_SEG is also good for SP: 0x9000 bytes of total size (.text + .rodata + .data + .bss + stack) is enough.
 		mov ss, sp
 		sti
 		mov es, sp
@@ -260,14 +276,17 @@ _main:
   .boot_copy_seg: equ $-2
   _n_sectors: equ _start+0  ; dw .sectors_per_track value. It will be autodected with int 13h AH==8.
   _n_heads: equ _start+8  ; dw .head_count value. It will be autodected with int 13h AH==8.
-%elif BOOT
-  IMAGE_SEG equ 0x1000  ; We will load the /boot image here (at IMAGE_SEG:0).
-  MBR_LOAD_SEG equ 0x7c0  ; The BIOS has loaded our code (from _start) to MBR_LOAD_SEG:0.
+%elif BOOT+LINUX10
+  %if LINUX10
+    IMAGE_SEG equ 0xf60  ; We will load the /vmlinuz image here (at IMAGE_SEG:0).
+  %else
+    IMAGE_SEG equ 0x1000  ; We will load the /boot image here (at IMAGE_SEG:0).
+  %endif
 		mov ax, MBR_LOAD_SEG  ; current code segment
-		mov ds, ax  ; data addressable
-		cli  ; Some broken early 8086 CPUs can process an interrupts after `mov ss, ax'.
-		mov ss, ax  ; stack addressable
-		mov sp, -MBR_LOAD_SEG<<4
+		mov ds, ax
+		cli  ; Some broken early 8086 CPUs can process an interrupt after `mov ss, ax'.
+		mov ss, ax
+		mov sp, (IMAGE_SEG-MBR_LOAD_SEG)<<4  ; This puts the top of the stack at 0xf60:0 == 0x7c0:0x7a00, and the bottom at 0x7c0:0x800. The stack space of 0x7a00 - 0x800 bytes is enough.
 		sti
 		xor di, di  ; Workaround for buggy BIOS doing int 13h AH==8. Also the 0 value will be used later.
 		mov [byte di+_diskcode], dl  ; code for boot disk
@@ -294,7 +313,7 @@ fatal_lost_file:
 fatal_si:
 .nextchar:
 		lodsb
-		test al, al  ; check for null char
+		test al, al  ; Check for NUL terminator byte.
 		jz short .halt
 		mov ah, 14  ; 14 = print char
 		xor bx, bx
@@ -314,7 +333,7 @@ cont_main:
 %if SHOELACE  ; Others have done it already.
 		cld  ; direction is up
 %endif
-		int 0x13  ; BIOS disk syscall. This call changes ES and DI only if DL is a floppy drive.
+		int 0x13  ; BIOS disk syscall AH == 8 (read drive parameters). This call changes ES and DI only if DL is a floppy drive.
 		jc short fatal_lost
 
 		and cx, byte 0x3f  ; isolate number of sectors
@@ -326,7 +345,7 @@ cont_main:
 		pop dx  ; Restore DL (drive number).
 		int 0x13  ; BIOS disk syscall.
 
-; The upper half kb of boot code is read in from the boot device. This
+; The upper half KiB of boot code is read in from the boot device. This
 ; is loaded immediately following the end of this half kb. It is assumed
 ; that values for cx (ch = cylinder number, cl = sector number) and
 ; dx (dh = head number, dl = disk code) have been pushed
@@ -338,6 +357,7 @@ cont_main:
 ; at the end of the boot sector. Assume that the boot block writer
 ; has shuffled space in the code to effect this. To recover the executable
 ; it is necessary to read over this signature.
+read_upper_half:
 		push ds  ; read next block into this segment
 		pop es
 .retry_sector_1_read:
@@ -350,10 +370,11 @@ cont_main:
 %if SHOELACE
 		push ds  ; Segment used by _main(...) in /shoelace for getting e.g. _diskcode (see above).
 		;push ax  ; Dummy value, popped by _main(...) in /shoelace. We don't push it, because the `call' below pushes a value.
+		call _loadandrunimage  ; This `call' pushed the dummy offset value. It doesn't return for SHOELACE.
+		; Not reached for SHOELACE.
+%elif MINIX+BOOT+LINUX10
 		call _loadandrunimage
-%elif MINIX+BOOT
-		call _loadandrunimage
-		; Fall through to jump_to_minix or jump_to_boot.
+		; Fall through to jump_to_minix, jump_to_boot or jump_to_linux.
 %else
   %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_LOAD
   times -1 nop
@@ -379,9 +400,7 @@ cont_main:
 		mov di, ss  ; Segment of boot_parameters.
 		mov si, sp  ; Offset  of boot_parameters.
 		jmp IMAGE_SEG:0  ; Jump to the entry point of the kernel component of the Minix kernel image: MINIX in /usr/src/kernel/start.x.
-%endif
-
-%if BOOT
+%elif BOOT
   jump_to_boot:
   ; Load protocol for /boot when booting from HDD:
   ; * Set ES:SI to point to partition entry in the partition table (0x10 bytes).
@@ -392,6 +411,51 @@ cont_main:
 		pop es
 		mov si, bootable_partition
 		jmp IMAGE_SEG:0x30  ; Jump to the entry point of the Minux >=1.6 boot monitor: boot in /usr/src/boot/boothead.S  . Offset 0x30 would also work.
+%elif LINUX10
+  jump_to_linux10:
+  ; Linux 1.0 load protocol for /vmlinuz when booting from HDD:
+  ; * Load the file /boot/vmlinuz to 0xf60:0. It can be as long as 514.5 KiB, ending at 0x9000:0.
+  ; * !! (Not done here yet.) Instead of loading the whole file, load 0x200 bytes, set syssize to little-endian, 16-bit value at file offset 0x1f4, maximize load byte size to (syssize<<4)+0xa00.
+  ; * !! (Not done here yet.) Turn the floppy motor off if loaded /boot/vmlinuz from floppy. (`mov dx, 0x3f2` ++ `mov al, 0` ++ `out dx, al`.)
+  ; * Copy 0xa00 bytes from 0xf60:0 to 0x9000:0.
+  ; * Optionally, check that word [0x9000:0x1fe] == 0xaa55, and fail if it doesn't match. (Not done here.)
+  ; * If needed, modify the in-memory boot parameters (especially the root_dev), each 16-bit: (Only root_dev is modified here.)
+  ;    * 0x9000:0x1f2: root_flags: dw 1  ; 1 means mount root filesystem read-write; 0 == CONFIG_ROOT_RDONLY means read-only
+  ;    * 0x9000:0x1f4: syssize: `dw ((file_byte_size_of_vmlinuz-0xa00+15)>>4`
+  ;    * 0x9000:0x1f6: swap_dev: dw 0
+  ;    * 0x9000:0x1f8: ram_size: dw 0
+  ;    * 0x9000:0x1fa: vid_mode: dw 0xffff  ; 0xffff == NORMAL_VGA (80*25); 0xfffe == EXTENDED_VGA (80*50); 0xfffd == ASK_VGA (ask for it at boot.
+  ;    * 0x9000:0x1fc: root_dev: dw 0x301  ; 0x301 == /dev/hda1. Other devices: 0x300 == /dev/hda; 0x340 == /dev/hdb; 0x341 == /dev/hdb1; 0x200 == /dev/fd0; 0x201 == /decv/fd1.
+  ; * Set SS to 0x9000, SP to 0x3ffc. CS and IP will be set later. Other 8086 registers (AX, BX, CX, DX, SI, DI, BP, DS, ES, FLAGS) don't matter.
+  ; * Enable interrupts (sti) if they weren't enabled already. (It is already enabled.) (Not needed here.)
+  ; * Jump to 0x9020:0.
+  ;
+  ; Linux 1.0.4 can mount Minix v1 (not v2 or v3) filesystem with either 14-byte filenames or 30-byte filenames read-write. It can also boot from such filesystems.
+  ;
+  ; Linux 1.0.4 doesn't support receiving a kernel command line (/proc/cmdline) from to bootloader.
+		mov al, [_diskcode]
+		mov dx, IMAGE_SEG  ; 0xf60.
+		mov ds, dx
+		mov dx, 0x9000
+		mov es, dx
+		mov ss, dx  ; On a >=386 CPU (required by Linux), this `mov ss, dx' and the next `mov sp, ...' are processed together, as if `cli' was active.
+		mov sp, 0x3ffc
+		xor si, si
+		xor di, di
+		mov cx, (4+1)<<9>>1  ; Copy 1 Linux kernel boot sector (boot/bootsect.S) and 4 Linux kernel setup sectors (boot/setup.S) to 0x9000:0.
+		rep movsw
+		mov dl, al  ; Not strictly needed, just be a good citizen and pass the BIOS boot drive number to the kernel.
+		mov cl, 6
+		shl ax, cl  ; AX: _diskcode == 0x80 (/dev/hda) --> 0x??00; 0x81 (/dev/hdb) --> 0x??40; 0x82 (/dev/hdc) --> 0x??80; 0x83 (/dev/hdd) --> 0x??c0.
+		mov ah, 3   ; AX: _diskcode == 0x80 (/dev/hda) --> 0x0300; 0x81 (/dev/hdb) --> 0x0340; 0x82 (/dev/hdc) --> 0x0380; 0x83 (/dev/hdd) --> 0x03c0.
+		mov di, 0x1fc  ; root_dev.
+		stosw  ; Set root_dev.
+		jmp 0x9020:0  ; Jump to Linux setup sector entry point.
+%elif SHOELACE
+  ; Nothing to do, not reached.
+%else
+  %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_IMAGE
+  times -1 nop
 %endif
 
 ; The boot code will use the tiny model in which code and data occupy
@@ -411,6 +475,8 @@ _noimgname:	db 'Lost '
   _imgname1:	db '/minix'
 %elif BOOT
   _imgname1:	db '/boot'
+%elif LINUX10
+  _imgname1:	db '/vmlinuz'  ; '/boot/vmlinuz' wouldn't work, because this boot code can only load from the root directory. So make a hard link (ln boot/vmlinuz vmlinuz), not a symlink!
 %else
   %error ERROR_UNSUPPORTED_MODE_FOR_IMGNAME1
   times -1 nop
@@ -611,12 +677,14 @@ _checkfilesize:
 ;  *
 ;  * Assumes that n > 0. The outer loop will execute a silly number
 ;  * of times if this is not true.
+;  *
+;  * It gets called with level values 0, 1 and 2.
 ;  */
 ; inode_nr scanzone(zone_nr *zp, int level, int n, INODEFN fn) {
 ;   long b;                             /* current block */
 ;   int i;                              /* index */
 ;   inode_nr v;                         /* return value from function */
-;   buffer_t tb;                        /* zone reading buffer */
+;   buffer_t tb;                        /* zone reading buffer, 0x400 bytes, large */
 ;   do {
 ;     b = zoneblock(*zp++);
 ;     i = zsize;
@@ -736,6 +804,8 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
     disk_id_signature: db 'BotL'
   %elif BOOT
     disk_id_signature: db 'BotM'
+  %elif LINUX10
+    disk_id_signature: db 'LinX'
   %else
     disk_id_signature: db 'MinX'
   %endif
@@ -754,6 +824,11 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
     partition_2: emit_empty_partition
     partition_3: emit_empty_partition
     partition_4: emit_empty_partition
+  %elif LINUX10  ; No partitions, we boot directly from /dev/hda.
+    partition_1: emit_empty_partition
+    partition_2: emit_empty_partition
+    partition_3: emit_empty_partition
+    partition_4: emit_empty_partition
   %else
     %error ERROR_UNSUPPORTED_MODE_FOR_EMIT_PARTITION_TABLE
     times -1 nop
@@ -761,10 +836,12 @@ _zsize: equ $-2  ; unsigned int zsize;  zone size  ; 2 bytes.
   ;assert_at .header+0x1fe
   boot_signature: dw BOOT_SIGNATURE
   ;assert_at .header+0x200
+  %define emit_partition_table  ; Make subsequent calls a no-op.
 %endm
 
-%if MINIX
-  emit_partition_table  ; Emit it before _procimagefile, because we otherwise _procimagefile wouldn't fit to the MBR sector.
+%if MINIX  ; Emit it before _procimagefile.in, because we otherwise _procimagefile wouldn't fit to the MBR sector: for MINIX, the first sector would be 74 bytes too long.
+;%if MINIX ;+MINIX10
+  emit_partition_table
 %endif
 
 ; /* Processes the next (1 KiB) read from the image file. Copies the first
@@ -813,7 +890,6 @@ _startload: equ $-1  ; unsigned char startload = 1;
 ; increase filesize here. We can ruin registers CX, DX, SI, DI and FLAGS. We
 ; must keep BP and BX (bufp) intact, and we must set AX to our desired
 ; hsize.
-%define CL_IS_ZERO 1
 %if SHOELACE
   ; For SHOELACE, we limit _filesize to min(_filesize, a_hdrlen + a_text +
   ; a_data), and skip the a.out executable header (of size a_hdrlen,
@@ -836,11 +912,10 @@ _startload: equ $-1  ; unsigned char startload = 1;
 		jnz short .large_enough  ; High word is nonzero, file size is >0x10000 bytes. This is very unusual, typical /shoelae file size is 47 KiB.
 		cmp word [si], dx
 		jbe short .hsize_and_filesize_ok  ; _filesize is already too small, don't limit.
-.large_enough:
+  .large_enough:
 		mov [si+2], cx  ; Set high word of _filesize to 0.
 		mov [si], dx  ; Decrease (set) low word of _filesize to DX.
-%endif
-%if MINIX
+%elif MINIX
   ; For MINIX, we set hsize to 0x200 to skip the bootblok at the beginning
   ; of the Minix kernel image.
   ;
@@ -862,17 +937,17 @@ _startload: equ $-1  ; unsigned char startload = 1;
 		mov ax, [di-2]  ; DX := menu_cs.
 		mov di, [di-6]  ; DI := menu_ds.
 		jmp short .have_menu_cs_and_ds
-.no_bootsig:
+  .no_bootsig:
 		cmp word [di-2], cx  ; Is menu_pc == 0?
 		jne short .filesize_ok  ; Bad values at the end of the boot sector, don't limit _filesize.
 		mov ax, [di]  ; DX := menu_cs.
 		mov di, [di-4]  ; DI := menu_ds.
-.have_menu_cs_and_ds:
+  .have_menu_cs_and_ds:
 		cmp di, ax
 		jb short .filesize_ok  ; menu_ds < menu_cs, probably all values are bad, don't limit _filesize.
 		cmp ax, strict word 0x60
 		jbe short .filesize_ok  ; menu_cs <= 0x60, probably all values are bad, don't limit _filesize.
-.calc_filesize_based_on_menu_cs:
+  .calc_filesize_based_on_menu_cs:
 		sub ax, strict word 0x40
 		mov di, 0x10
 		mul di  ; DX:AX (filesize_limit) := AX * DI == (menu_cs - 0x40) << 4.
@@ -882,15 +957,21 @@ _startload: equ $-1  ; unsigned char startload = 1;
 		jb short .large_enough
 		cmp ax, [si]
 		jae short .filesize_ok  ; High word of filesize_limit is equal, low word is larger or equal than _filesize, so we can't decrease it.
-.large_enough:
+  .large_enough:
 		mov [si+2], dx  ; Set high word of _filesize, decreasing it.
 		mov [si], ax    ; Set low  word of _filesize, decreasing it.
-.filesize_ok:
+  .filesize_ok:
 		mov ax, 0x200  ; Set hsize to 0x200 to skip the bootblok at the beginning of the Minix kernel image.
-%endif
-%if BOOT
+
+%elif BOOT
   %define CL_IS_ZERO 1  ; Enable optimization below.
   ; TODO(pts): Load only a_hdrlen + a_text + a_data bytes (no a_syms etc.). This optimization is not needed, because /boot typically doesn't contain symbols.
+%elif LINUX10
+  %define CL_IS_ZERO 1  ; Enable optimization below.
+  ; !! Instead of loading the whole file, load 0x200 bytes, set syssize to little-endian, 16-bit value at file offset 0x1f4, maximize load byte size to (syssize<<4)+0xa00. syssize is [bx+0x1f4].
+%else
+  %error ERROR_UNSUPPORTED_MODE_FOR_PROCIMAGEFILE
+  times -1 nop
 %endif
 .hsize_and_filesize_ok:
 %if CL_IS_ZERO
@@ -929,10 +1010,9 @@ _bufptr_ofs: equ $-2
 		pop si  ; Restore.
 		ret
 
-%if SHOELACE+BOOT
-  emit_partition_table
-%endif
+emit_partition_table  ; This is a no-op if already emitted.
 %if BOOT
+  times 0x200-($-_start) hlt
   boot_parameter_sector:  ; PARAMSEC == 1, i.e. this sector follows the boot sector. For us, it follows the MBR sector. /boot reads it in get_parameters() called from boot() in /usr/src/boot/boot.c.
   db 'rootdev=bootdev', LF
   %ifndef BOOTINET  ; Use `nasm -DBOOTINET' to enable networking.
@@ -1006,12 +1086,19 @@ _procdir.in:
 		jmp short .found  ; return thisnode;
 .not_this_dentry:
 		xor di, di
-.dentry_size: equ $+1
-		mov al, 0x20  ; Affected by self-modifying code: the value will be modified to 0x10 for filesystem created with `mkfs.minix -n 14' (`mkfs.minix --namelength=30') (default), and kept as 0x20 for `mkfs.minix -n 30'.
+%if LINUX10  ; Minix <=2.0.4 supports only namelength==14. Linux 1.0.4 supports both namelength==14 and namelength==30.
+  DO_BOTH_NAMELENGTHS equ 1
+  DEFAULT_DENTRY_SIZE equ 0x20
+%else
+  DO_BOTH_NAMELENGTHS equ 0
+  DEFAULT_DENTRY_SIZE equ 0x10
+%endif
+		mov al, DEFAULT_DENTRY_SIZE  ; Affected by self-modifying code: the value will be modified to 0x10 for filesystem created with `mkfs.minix -n 14' (`mkfs.minix --namelength=30') (default), and kept as 0x20 for `mkfs.minix -n 30'.
+.dentry_size: equ $-1
 		add bx, ax  ; sizeof(dir_struct).
 		sub [_filesize], ax  ; sizeof(dir_struct).
 		sbb [_filesize+2], di  ; DI == 0.
-		call _checkfilesize  ; Sets FLAGS, ruins AX. !! Replace it with: `mov ax, DENTRY_SIZE' ++ `call _subfilesize'.
+		call _checkfilesize  ; Sets FLAGS, ruins AX. !! size optimization: Replace it with: `mov ax, DENTRY_SIZE' ++ `call _subfilesize'.
 		xchg ax, di  ; AX := 0; DI := junk.
 		jle short .not_found  ; if (checkfilesize() <= 0) return ROOT_INODE;
 		cmp bx, cx
@@ -1070,7 +1157,7 @@ _procdir.in:
 ; }
 ;
 ; Helper function which uses the stack frame (BP) of _loadandrunimage. See
-; the commentn of _loadandrunimage for description and register usage.
+; the comment of _loadandrunimage for description and register usage.
 _loadandrunimage.process_inode:
 		; Now AX is node-1; BP is inodeblock.
 		push ax  ; Save node.
@@ -1134,39 +1221,43 @@ _loadandrunimage:
 		mov bp, [si+4]
 		times 2 inc bp
 		add bp, [si+6]  ; Set BP (inodeblock) to its final value.
+%if DO_BOTH_NAMELENGTHS
 		mov al, [si+16]  ; Check the s_magic field in the superblock.
 		and al, 0x10  ; AL := 0x10 for 0x137f (namelength==14). AL := 0 for 0x138f (namelength==30).
 		sub [_procdir.in.dentry_size], al  ; Self-modifying code: set .procdir_in.dentry size based on s_magic value in the superblock (0x137f means Minix v1 filesystem with namelength==14, set to 0x10, 0x138f means Minix v1 filesystem with namelength==30, set to 0x20).
+%endif
 .dentry_size_ok:
 		xor ax, ax  ; AX (node) := ROOT_INODE - 1 == 0.
 		call .process_inode  ; ROOT_INODE (/): AX == ROOT_INODE - 1.
-		sub ax, strict word 1  ; Sets AX -= 1, and also updates the files with respect to `cmp ax, strict word 1'.
+		sub ax, strict word 1  ; Sets AX -= 1, and also updates FLAGS with respect to `cmp ax, strict word 1'.
 		ja short .found_image_file  ; Jump iff node > ROOT_INODE.
 		mov byte [_endimgname], CR  ; The message would be equally comprehensible without the CRLF at the end.
 		jmp strict near fatal_lost_file  ; Doesn't return.
 .found_image_file:
 		mov byte [_procdir_or_procimagefile.or_opcode_byte], 0xe9  ; Self-modifying code: to change the function pointer fn to _procimagefile, we modify the opcode byte at _procdir_or_procimagefile.or_opcode_byte from `test ax, ...' (0xa9) to `jmp strict near' (0xe9).
 		call .process_inode  ; inode of the image file. AX == inode number of the file - 1.
-		; Fall through to jump_to_image.
+		; Fall through to jump_to_shoelace.
 
-jump_to_image:
 %if SHOELACE
+jump_to_shoelace:
 		jmp IMAGE_SEG:0  ; Jump to _main(...) in /shoelace. The BPB segment (DS, with _nsectors) and the dummy offset value has already been pushed by the `call _loadandrunimage' above.
-%elif MINIX+BOOT
+%elif MINIX+BOOT+LINUX10
 		ret  ; jmp near jump_to_minix  ; The actual code is in the MBR sector, because there is enough space there.
 %else
-  %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_IMAGE
+  %error ERROR_UNSUPPORTED_MODE_FOR_JUMP_TO_SHOELACE
   times -1 nop
 %endif
 
 %if $-_start>0x400
-  %error ERROR_BOOTLACE_TOO_LONG
+  %error ERROR_BOOT_CODE__TOO_LONG
   times -1 nop
 %endif
 
 absolute $  ; BSS.
 		resb (_start-$)&1  ; Aligment.
-_blockbuf:	resb 0x400  ; buffer_t blockbuf;  ; block buffer. 0x400 bytes.
+; _blockbuf is used for reading the superblock and the inode blocks.
+; Instead of _blockbuf, the on-stack buffers (up to 3 at the same time) in _scanzone are used for reading the indirect block, the double indirect block, the double indirect blocklist blocks, the dentry (directory entry) blocks and the file data blocks.
+_blockbuf:	resb 0x400  ; buffer_t blockbuf;  ; Block buffer. 0x400 bytes == 1 block.
 
 ; No more global variables, we have them all. Total size: a_bss == 0x40a bytes.
 
